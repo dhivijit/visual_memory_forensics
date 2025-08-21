@@ -1,0 +1,4 @@
+*.dmp
+memory_dumps/*
+memory_images/*
+dump_metadata.csv
