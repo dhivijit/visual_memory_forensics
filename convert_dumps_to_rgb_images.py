@@ -14,7 +14,7 @@ DUMP_FOLDER = "memory_dumps"
 OUTPUT_FOLDER = "memory_images"
 IMAGE_WIDTH = 2048
 IMAGE_HEIGHT = 2048
-METADATA_FILE = "dump_metadata.csv"
+METADATA_FILE = "forensics_out/dump_manifest.csv"
 LABEL_COLUMN = 'Label'  # Optional: manually labeled beforehand
 
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
@@ -80,34 +80,75 @@ def convert_to_rgb_image(data_bytes, image_name, output_dir):
     return mappings
 
 def process_all_dumps():
-    with open(METADATA_FILE, 'r') as csvfile:
+    # Try reading metadata/manifest
+    if not os.path.isfile(METADATA_FILE):
+        print(f"Metadata file not found: {METADATA_FILE}")
+        return
+
+    with open(METADATA_FILE, 'r', newline='') as csvfile:
         reader = csv.DictReader(csvfile)
         for row in reader:
-            dump_path = os.path.join(DUMP_FOLDER, row['DumpFilename'])
-            label = row.get(LABEL_COLUMN, "unknown")
-            if not os.path.isfile(dump_path):
-                print(f"❌ File not found: {dump_path}")
+            # If manifest includes a 'dump_dir' column (forensics output), prefer that
+            dump_dir = row.get('dump_dir') or row.get('DumpDir') or row.get('DUMP_DIR')
+            if dump_dir:
+                # candidate locations where the dump folder may exist
+                candidates = [os.path.join('forensics_out', dump_dir), os.path.join('forensics_out', 'dumps', dump_dir)]
+                found = False
+                for cand in candidates:
+                    if os.path.isdir(cand):
+                        # look for a .dmp file directly in this folder
+                        for fname in os.listdir(cand):
+                            if fname.lower().endswith('.dmp'):
+                                dmp_path = os.path.join(cand, fname)
+                                images_dir = os.path.join(cand, 'images')
+                                os.makedirs(images_dir, exist_ok=True)
+                                label = row.get('name', row.get('Name', 'unknown'))
+                                print(f"Processing manifest entry: {dmp_path} -> {images_dir}")
+                                with open(dmp_path, 'rb') as f:
+                                    data = f.read()
+                                base_name = os.path.splitext(fname)[0]
+                                image_name = f"{base_name}_{label}.png"
+                                mappings = convert_to_rgb_image(data, image_name, images_dir)
+                                # write index
+                                index_path = os.path.join(images_dir, f"{base_name}_index.csv")
+                                with open(index_path, 'w', newline='') as idxf:
+                                    w = csv.DictWriter(idxf, fieldnames=['image', 'start_byte', 'end_byte', 'size_bytes'])
+                                    w.writeheader()
+                                    for m in mappings:
+                                        w.writerow({'image': os.path.basename(m['path']), 'start_byte': m['start'], 'end_byte': m['end'], 'size_bytes': m['size']})
+                                print(f"✅ Converted: {dmp_path} → {len(mappings)} images in {images_dir}")
+                                found = True
+                                break
+                        if found:
+                            break
+                if not found:
+                    print(f"❌ No .dmp found for manifest dump_dir '{dump_dir}' in candidate locations: {candidates}")
                 continue
 
-            with open(dump_path, 'rb') as f:
-                data = f.read()
-
-            base_name = os.path.splitext(row['DumpFilename'])[0]
-            # create per-dump subfolder inside OUTPUT_FOLDER for tidiness
-            dump_folder = os.path.join(OUTPUT_FOLDER, base_name)
-            image_name = f"{base_name}_{label}.png"
-            mappings = convert_to_rgb_image(data, image_name, dump_folder)
-
-            # write an index file listing byte ranges
-            index_path = os.path.join(dump_folder, f"{base_name}_index.csv")
-            with open(index_path, 'w', newline='') as idxf:
-                w = csv.DictWriter(idxf, fieldnames=['image', 'start_byte', 'end_byte', 'size_bytes'])
-                w.writeheader()
-                for m in mappings:
-                    w.writerow({'image': os.path.basename(m['path']), 'start_byte': m['start'], 'end_byte': m['end'], 'size_bytes': m['size']})
-
-            # summarise output
-            print(f"✅ Converted: {dump_path} → {len(mappings)} images in {dump_folder}")
+            # Fallback: expect original format with 'DumpFilename' referring to files under DUMP_FOLDER
+            dump_filename = row.get('DumpFilename') or row.get('dumpfilename')
+            if dump_filename:
+                dump_path = os.path.join(DUMP_FOLDER, dump_filename)
+                label = row.get(LABEL_COLUMN, 'unknown')
+                if not os.path.isfile(dump_path):
+                    print(f"❌ File not found: {dump_path}")
+                    continue
+                with open(dump_path, 'rb') as f:
+                    data = f.read()
+                base_name = os.path.splitext(dump_filename)[0]
+                dump_folder = os.path.join(OUTPUT_FOLDER, base_name)
+                os.makedirs(dump_folder, exist_ok=True)
+                image_name = f"{base_name}_{label}.png"
+                mappings = convert_to_rgb_image(data, image_name, dump_folder)
+                index_path = os.path.join(dump_folder, f"{base_name}_index.csv")
+                with open(index_path, 'w', newline='') as idxf:
+                    w = csv.DictWriter(idxf, fieldnames=['image', 'start_byte', 'end_byte', 'size_bytes'])
+                    w.writeheader()
+                    for m in mappings:
+                        w.writerow({'image': os.path.basename(m['path']), 'start_byte': m['start'], 'end_byte': m['end'], 'size_bytes': m['size']})
+                print(f"✅ Converted: {dump_path} → {len(mappings)} images in {dump_folder}")
+            else:
+                print(f"⚠️  Unrecognized metadata row (no dump_dir or DumpFilename): {row}")
 
 if __name__ == "__main__":
     process_all_dumps()
