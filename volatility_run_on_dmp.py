@@ -1,3 +1,5 @@
+# volatility_run_on_dmp.py
+
 import os, re, csv, time, json, math, hashlib, subprocess, psutil
 from datetime import datetime
 from pathlib import Path
@@ -16,7 +18,7 @@ TOOLS_DIR = ROOT_OUT / "tools"      # optional: place procdump here
 
 # Path overrides
 PROCDUMP = os.environ.get("PROCDUMP_PATH", "procdump.exe")  # or r"C:\tools\procdump.exe"
-VOL_PY   = os.environ.get("VOLATILITY_PATH", r"C:/Users/dhivi/portable apps/volatility3/vol.py")
+VOL_PY   = os.environ.get("VOLATILIT_PATH", r"C:/Users/dhivi/portable apps/volatility3/vol.py")
 
 YARA_RULEFILE = RULES_DIR / "crypto_webminer.yar"
 
@@ -24,6 +26,7 @@ YARA_RULEFILE = RULES_DIR / "crypto_webminer.yar"
 import sys
 import glob
 import shutil
+import argparse
 
 URL_RE   = re.compile(rb"https?://[^\s\"'<>]{5,}")
 WSS_RE   = re.compile(rb"wss?://[^\s\"'<>]{5,}")
@@ -130,19 +133,19 @@ def volatility_json(dump: Path, plugin: str, out_json: Path, extra: list[str]|No
             "--output-format", "json", "--output-file", str(out_json)]
     if extra:
         args += extra
-    run(args)
+    run(args, check=True)
 
 def volatility_yara(dump: Path, rulefile: Path, out_json: Path):
     args = ["python", str(VOL_PY), "-f", str(dump), "yarascan.YaraScan",
             "--yara-rules", str(rulefile),
             "--output-format", "json", "--output-file", str(out_json)]
-    run(args)
+    run(args, check=True)
 
 def volatility_vadump(dump: Path, out_dir: Path):
     mkdir(out_dir)
     args = ["python", str(VOL_PY), "-f", str(dump),
             "windows.vadump", "--dump-dir", str(out_dir)]
-    run(args)
+    run(args, check=True)
 
 # =========================
 # CARVED REGION ANALYZER
@@ -349,8 +352,65 @@ def watcher():
 
 if __name__ == "__main__":
     mkdir(ROOT_OUT); mkdir(DUMPS_DIR); mkdir(RULES_DIR)
+    parser = argparse.ArgumentParser(description="Run volatility triage on either live processes (watcher) or on an existing .dmp file.")
+    parser.add_argument("--dmp", help="Path to an existing .dmp file to triage (if provided, watcher will not run)")
+    parser.add_argument("--out", help="Optional output directory for the triage results (default: forensics_out/<dmpbasename>_manual_<ts>)")
+    args = parser.parse_args()
+
+    # Ensure a minimal manifest exists for compatibility with other tools/scripts
     manifest = ROOT_OUT / "dump_manifest.csv"
     if not manifest.exists():
         with open(manifest, "w", newline="") as f:
             csv.writer(f).writerow(["timestamp","name","pid","dump_dir"])
-    watcher()
+
+    def process_existing_dmp(dmp_path: str, out_override: str|None = None):
+        dmp = Path(dmp_path)
+        if not dmp.exists():
+            print(f"❌ Provided dmp does not exist: {dmp}")
+            return
+        stamp = ts()
+        base = dmp.stem
+        if out_override:
+            case_dir = Path(out_override)
+        else:
+            case_dir = ROOT_OUT / f"{base}_manual_{stamp}"
+        mkdir(case_dir)
+
+        # Copy or reference the dmp into the case dir (we will reference in place to avoid large copies)
+        # If you prefer a local copy, uncomment the copy below.
+        # local_dmp = case_dir / dmp.name
+        # shutil.copy2(dmp, local_dmp)
+        local_dmp = dmp
+
+        # Prepare output paths
+        vadinfo_json  = case_dir / "vadinfo.json"
+        malfind_json  = case_dir / "malfind.json"
+        dlllist_json  = case_dir / "dlllist.json"
+        yara_json     = case_dir / "yara.json"
+        threads_json  = case_dir / "threads.json"
+
+        # Run volatility plugins
+        print(f"[>] Running volatility triage on {local_dmp} -> {case_dir}")
+        volatility_json(local_dmp, "windows.vadinfo", vadinfo_json)
+        volatility_json(local_dmp, "windows.malfind", malfind_json)
+        volatility_json(local_dmp, "windows.dlllist", dlllist_json)
+        volatility_json(local_dmp, "windows.threads", threads_json)
+
+        # YARA
+        write_yara_rules()
+        volatility_yara(local_dmp, YARA_RULEFILE, yara_json)
+
+        # VAD carving
+        vadump_dir = case_dir / "carved_regions"
+        volatility_vadump(local_dmp, vadump_dir)
+        analyze_carved_regions(vadump_dir, case_dir / "regions_summary.json")
+
+        # Build a minimal proc_meta for the bundle (we don't have runtime process info)
+        proc_meta = {"pid": 0, "name": base, "username": "", "ppid": 0, "num_threads": 0, "create_time": stamp}
+        build_bundle(local_dmp, proc_meta, case_dir)
+        print(f"[✓] Triaged existing dmp: {local_dmp} -> {case_dir}")
+
+    if args.dmp:
+        process_existing_dmp(args.dmp, args.out)
+    else:
+        watcher()
