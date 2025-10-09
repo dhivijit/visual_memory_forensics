@@ -12,9 +12,10 @@ This script:
   - Validates each with pefile
   - Extracts and writes valid (and partial) PEs into the chosen folder
   - Produces a carved_pe/index.json summary file
+  - Includes MD5, SHA1, and SHA256 hashes for each carved PE
 """
 
-import sys, os, mmap, struct, json
+import sys, os, mmap, struct, json, hashlib
 from pathlib import Path
 import pefile
 
@@ -24,6 +25,14 @@ def get_output_folder():
     if not folder:
         folder = "carved_pe"
     return Path(folder)
+
+def compute_hashes(data: bytes):
+    """Compute MD5, SHA1, and SHA256 of given data."""
+    return {
+        "md5": hashlib.md5(data).hexdigest(),
+        "sha1": hashlib.sha1(data).hexdigest(),
+        "sha256": hashlib.sha256(data).hexdigest()
+    }
 
 def carve_pes(dump_path, out_dir):
     size = os.path.getsize(dump_path)
@@ -92,6 +101,8 @@ def carve_pes(dump_path, out_dir):
                 except Exception:
                     pass
 
+                hashes = compute_hashes(blob)
+
                 out_name = out_dir / f"carved_{count:04d}.bin"
                 with open(out_name, "wb") as out_f:
                     out_f.write(blob)
@@ -102,12 +113,13 @@ def carve_pes(dump_path, out_dir):
                     "size": len(blob),
                     "parsed": valid,
                     "magic": hex(magic),
-                    "sections": num_sections
+                    "sections": num_sections,
+                    "hashes": hashes
                 })
 
                 print(f"[{'OK' if valid else '??'}] {out_name.name} @ {pos} size={len(blob)} parsed={valid}")
-                count += 1
 
+                count += 1
                 if count >= MAX_CANDIDATES:
                     print("Reached max candidates — stopping.")
                     break
