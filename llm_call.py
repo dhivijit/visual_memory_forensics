@@ -315,7 +315,24 @@ def send_final_analysis(out_dir: str, api: str, gpt_model: str, gpt_key: Optiona
         print(f"[final] final_analysis.txt not found at {final_txt_path}")
         return
 
-    body = load_text(final_txt_path)
+    # Verbose diagnostics: size, lines, preview
+    try:
+        stat = os.stat(final_txt_path)
+        size = stat.st_size
+    except Exception:
+        size = None
+    raw_lines = open(final_txt_path, 'r', errors='replace').read().splitlines()
+    body = clean_ascii("\n".join(raw_lines))
+    if verbose:
+        print(f"final_analysis.txt -> {final_txt_path}")
+        if size is not None:
+            print(f"  size: {size} bytes")
+        print(f"  lines: {len(raw_lines)}")
+        if len(raw_lines) > 0:
+            head_preview = "\n".join(raw_lines[:5])
+            tail_preview = "\n".join(raw_lines[-5:])
+            print("  preview (first 5 lines):\n" + head_preview)
+            print("  preview (last 5 lines):\n" + tail_preview)
     name = "final_analysis"
     # For the final aggregated pass, do not truncate the body — send it in one go
     prompt = build_prompt(name, body, truncate=False)
@@ -323,6 +340,12 @@ def send_final_analysis(out_dir: str, api: str, gpt_model: str, gpt_key: Optiona
     prompt_path = os.path.join(out_dir, f"final__{name}.prompt.txt")
     with open(prompt_path, "w", encoding="utf-8") as f:
         f.write(prompt)
+
+    if verbose:
+        try:
+            print(f"Wrote final prompt -> {prompt_path} (chars: {len(prompt)})")
+        except Exception:
+            pass
 
     if dry_run:
         print(f"[DRY] Would send final analysis prompt: {prompt_path}")
@@ -389,6 +412,7 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--final", action="store_true", help="Send final_analysis.txt to the LLM and save a conclusion.txt")
+    parser.add_argument("--final-only", action="store_true", help="Skip chunking and send an existing final_analysis.txt from out-dir to the LLM")
     parser.add_argument("--sleep", type=float, default=1.0)
     args = parser.parse_args(argv)
 
@@ -396,10 +420,28 @@ def main(argv=None):
     out_dir = args.out_dir or os.path.join(folder, "llm_outputs")
     os.makedirs(out_dir, exist_ok=True)
 
-    # final aggregation file (append mode)
+    # final aggregation file (append mode) - only create/truncate when not running final-only
     final_txt_path = os.path.join(out_dir, "final_analysis.txt")
-    with open(final_txt_path, "w", encoding="utf-8") as f:
-        f.write("=== LLM Triaged Analysis (Aggregated) ===\n\n")
+    if not args.final_only:
+        with open(final_txt_path, "w", encoding="utf-8") as f:
+            f.write("=== LLM Triaged Analysis (Aggregated) ===\n\n")
+
+    # If the user wants to only run the final step, do it now using the existing final_analysis.txt
+    if args.final_only:
+        if args.verbose:
+            print("Running final-only: sending existing final_analysis.txt to LLM")
+        send_final_analysis(
+            out_dir=out_dir,
+            api=args.api,
+            gpt_model=args.gpt_model,
+            gpt_key=args.gpt_key,
+            perplexity_key=args.perplexity_key,
+            dry_run=args.dry_run,
+            verbose=args.verbose,
+            sleep=args.sleep,
+        )
+        print("Final-only run complete. Exiting.")
+        return
 
     chunks = prepare_prompts(folder)
     if args.verbose:
