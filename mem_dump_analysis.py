@@ -136,32 +136,81 @@ def run_strings_on_file(path: Path, out_dir: Path) -> Path:
             f.write(res.get("stderr"))
     return out_file
 
+# Pe-sieve related functions commented out per request.
+# If you want to re-enable pe-sieve later, remove the leading "# " from the function
+# definitions and their bodies (or restore from version control).
+
+# Minimal stubs so references to pe-sieve functions don't cause NameError.
 def run_pe_sieve_on_file(path: Path, out_dir: Path) -> Optional[Path]:
-    """
-    Runs pe-sieve -f <file> -o <outdir>
-    Expects pe-sieve to produce a JSON report in the output dir.
-    """
-    if not shutil.which(PE_SIEVE_CMD):
-        print("[!] pe-sieve not found in PATH; skipping pe-sieve step.")
-        return None
-    ps_outdir = out_dir / "pe_sieve_results"
-    ps_outdir.mkdir(exist_ok=True)
-    cmd = [PE_SIEVE_CMD, "-f", str(path), "-o", str(ps_outdir), "--json"]
-    print("[*] Running pe-sieve:", " ".join(cmd))
-    res = run_cmd(cmd, timeout=120)
-    # pe-sieve writes files into ps_outdir; try to find a scan_report.json or similar
-    # Save cummulative output
-    with open(ps_outdir / "pe_sieve_stdout.txt", "w", encoding="utf-8", errors="replace") as f:
-        f.write(res.get("stdout",""))
-        if res.get("stderr"):
-            f.write("\n=== STDERR ===\n")
-            f.write(res.get("stderr"))
-    # try to find json report
-    json_candidates = list(ps_outdir.glob("**/*.json"))
-    if json_candidates:
-        return json_candidates[0]
-    # else return the ps_outdir for inspection
-    return ps_outdir
+    """Stub: pe-sieve disabled. Returns None to indicate no report produced."""
+    return None
+
+
+def parse_pe_sieve_json(json_path: Path) -> List[Path]:
+    """Stub: pe-sieve parsing disabled. Returns empty list of dumped files."""
+    return []
+
+# def run_pe_sieve_on_file(path: Path, out_dir: Path) -> Optional[Path]:
+#     """
+#     Runs pe-sieve -f <file> -o <outdir>
+#     Expects pe-sieve to produce a JSON report in the output dir.
+#     """
+#     if not shutil.which(PE_SIEVE_CMD):
+#         print("[!] pe-sieve not found in PATH; skipping pe-sieve step.")
+#         return None
+#     ps_outdir = out_dir / "pe_sieve_results"
+#     ps_outdir.mkdir(exist_ok=True)
+#     cmd = [PE_SIEVE_CMD, "-f", str(path), "-o", str(ps_outdir), "--json"]
+#     print("[*] Running pe-sieve:", " ".join(cmd))
+#     res = run_cmd(cmd, timeout=120)
+#     # pe-sieve writes files into ps_outdir; try to find a scan_report.json or similar
+#     # Save cummulative output
+#     with open(ps_outdir / "pe_sieve_stdout.txt", "w", encoding="utf-8", errors="replace") as f:
+#         f.write(res.get("stdout",""))
+#         if res.get("stderr"):
+#             f.write("\n=== STDERR ===\n")
+#             f.write(res.get("stderr"))
+#     # try to find json report
+#     json_candidates = list(ps_outdir.glob("**/*.json"))
+#     if json_candidates:
+#         return json_candidates[0]
+#     # else return the ps_outdir for inspection
+#     return ps_outdir
+#
+#
+# def parse_pe_sieve_json(json_path: Path) -> List[Path]:
+#     """
+#     Parse pe-sieve JSON (if present) to enumerate dumped files produced by pe-sieve.
+#     Common pattern: pe-sieve dumps files in the specified output dir; names vary.
+#     This returns Path list of likely dumped binaries (by extension or heuristic).
+#     """
+#     dumped = []
+#     try:
+#         j = json.loads(json_path.read_text(encoding="utf-8", errors="replace"))
+#     except Exception:
+#         print("[!] Unable to parse pe-sieve JSON:", json_path)
+#         return dumped
+#     # pe-sieve JSON structure varies; look for keys that reference dumped file paths
+#     def walk(obj):
+#         if isinstance(obj, dict):
+#             for k,v in obj.items():
+#                 if isinstance(v, str) and ("dump" in v.lower() or v.endswith(".bin") or v.endswith(".dll") or v.endswith(".exe") or v.endswith(".shc")):
+#                     p = Path(v)
+#                     if p.exists():
+#                         dumped.append(p)
+#                 else:
+#                     walk(v)
+#         elif isinstance(obj, list):
+#             for e in obj:
+#                 walk(e)
+#     walk(j)
+#     # fallback: look for any bin/dll/exe/shc under the folder of json
+#     candidates = list(json_path.parent.glob("*.*"))
+#     for c in candidates:
+#         if c.suffix.lower() in [".bin", ".dll", ".exe", ".shc"]:
+#             if c not in dumped:
+#                 dumped.append(c)
+#     return dumped
 
 def run_yara_on_file(yara_rules_path: Path, target_path: Path, out_dir: Path) -> Optional[Path]:
     if not shutil.which(YARA_CMD):
@@ -205,40 +254,6 @@ def analyze_dumped_pe(dumped_path: Path, out_dir: Path) -> Dict[str, Any]:
     else:
         info["rizin_report"] = None
     return info
-
-def parse_pe_sieve_json(json_path: Path) -> List[Path]:
-    """
-    Parse pe-sieve JSON (if present) to enumerate dumped files produced by pe-sieve.
-    Common pattern: pe-sieve dumps files in the specified output dir; names vary.
-    This returns Path list of likely dumped binaries (by extension or heuristic).
-    """
-    dumped = []
-    try:
-        j = json.loads(json_path.read_text(encoding="utf-8", errors="replace"))
-    except Exception:
-        print("[!] Unable to parse pe-sieve JSON:", json_path)
-        return dumped
-    # pe-sieve JSON structure varies; look for keys that reference dumped file paths
-    def walk(obj):
-        if isinstance(obj, dict):
-            for k,v in obj.items():
-                if isinstance(v, str) and ("dump" in v.lower() or v.endswith(".bin") or v.endswith(".dll") or v.endswith(".exe") or v.endswith(".shc")):
-                    p = Path(v)
-                    if p.exists():
-                        dumped.append(p)
-                else:
-                    walk(v)
-        elif isinstance(obj, list):
-            for e in obj:
-                walk(e)
-    walk(j)
-    # fallback: look for any bin/dll/exe/shc under the folder of json
-    candidates = list(json_path.parent.glob("*.*"))
-    for c in candidates:
-        if c.suffix.lower() in [".bin", ".dll", ".exe", ".shc"]:
-            if c not in dumped:
-                dumped.append(c)
-    return dumped
 
 def build_summary(cdb_txt_path: Path, strings_path: Path, pe_sieve_json: Optional[Path], carved_infos: List[Dict[str,Any]]) -> Dict[str,Any]:
     report = {
@@ -298,7 +313,8 @@ def main():
     strings_txt = run_strings_on_file(dump_path, out_dir)
 
     # 3) run pe-sieve on the raw dump
-    pe_sieve_json = run_pe_sieve_on_file(dump_path, out_dir)
+    # pe-sieve is disabled; ensure variable exists to avoid UnboundLocalError
+    pe_sieve_json = None
 
     # 4) analyze carved files from pe-sieve result
     carved_infos = []

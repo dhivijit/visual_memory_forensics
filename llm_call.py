@@ -36,8 +36,8 @@ TARGET_FILES = [
     "cdb.txt",
     "dump_hashes.json",
     "yara_msedge.exe_1856_20250824_101044.dmp.txt",
-    "strings.txt",
     os.path.join("pe_results", "imports.json"),
+    "strings.txt",
 ]
 
 MINER_KEYWORDS = [
@@ -198,18 +198,24 @@ def prepare_strings_chunks(folder: str):
     return out
 
 def prepare_prompts(folder: str):
-    prompts = []
+    prompts: List[tuple] = []
+    strings_chunks: List[tuple] = []
+
+    # First collect all non-strings files
     for fname in TARGET_FILES:
         path = os.path.join(folder, fname)
         if not os.path.exists(path):
             continue
 
+        # Defer strings processing until after other files
+        if os.path.basename(fname) == "strings.txt":
+            # store the chunks to append later
+            strings_chunks = prepare_strings_chunks(folder)
+            continue
+
         if fname.endswith(".json"):
             txt = load_json_text(path)
             prompts.append((fname, txt))
-        elif fname == "strings.txt":
-            for k, t in prepare_strings_chunks(folder):
-                prompts.append((f"strings::{k}", t))
         else:
             txt = load_text(path)  # ASCII-clean
             if len(txt) > CHUNK_CHAR_LIMIT:
@@ -217,6 +223,11 @@ def prepare_prompts(folder: str):
                 prompts.append((fname + "::tail", txt[-CHUNK_CHAR_LIMIT:]))
             else:
                 prompts.append((fname, txt))
+
+    # Append strings chunks at the end (if any)
+    for k, t in strings_chunks:
+        prompts.append((f"strings::{k}", t))
+
     return prompts
 
 def build_prompt(name: str, body: str, truncate: bool = True) -> str:
