@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-proc_dump_pipeline.py
+mem_dump_analysis.py
 
 Usage:
-    python proc_dump_pipeline.py -i <dumpfile.dmp> -o <output_dir> [--yara-rules rules.yar]
+    python mem_dump_analysis.py -i <dumpfile.dmp> -o <output_dir> [--yara-rules rules.yar]
 
 Produces:
   - cdb.txt                    : raw WinDbg/cdb output

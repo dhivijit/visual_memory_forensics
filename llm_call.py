@@ -31,14 +31,35 @@ except ImportError:
 
 # ---------------- CONFIGURATION ----------------
 
+# TARGET_FILES = [
+#     "analyzer_report.json",
+#     "cdb.txt",
+#     "dump_hashes.json",
+#     "yara_msedge.exe_1856_20250824_101044.dmp.txt",
+#     os.path.join("pe_results", "imports.json"),
+#     "strings.txt",
+# ]
+
 TARGET_FILES = [
     "analyzer_report.json",
     "cdb.txt",
     "dump_hashes.json",
-    "yara_msedge.exe_1856_20250824_101044.dmp.txt",
-    os.path.join("pe_results", "imports.json"),
     "strings.txt",
 ]
+
+def discover_optional_files(root):
+    found = []
+    # any yara_*.txt in root
+    for name in os.listdir(root):
+        if name.lower().startswith("yara_") and name.lower().endswith(".txt"):
+            found.append(name)
+    # support both pe_results/imports.json and carved_pe/imports.json
+    for cand in [os.path.join("pe_results","imports.json"),
+                 os.path.join("carved_pe","imports.json")]:
+        if os.path.exists(os.path.join(root, cand)):
+            found.append(cand)
+    return found
+
 
 MINER_KEYWORDS = [
     "stratum","minexmr","xmr","pool","miner","cryptonight","randomx",
@@ -200,6 +221,20 @@ def prepare_strings_chunks(folder: str):
 def prepare_prompts(folder: str):
     prompts: List[tuple] = []
     strings_chunks: List[tuple] = []
+
+    # Add discovered optional artifacts
+    for opt in discover_optional_files(folder):
+        path = os.path.join(folder, opt)
+        if path.endswith(".json"):
+            txt = load_json_text(path)
+        else:
+            txt = load_text(path)
+        if len(txt) > CHUNK_CHAR_LIMIT:
+            prompts.append((opt + "::head", txt[:CHUNK_CHAR_LIMIT]))
+            prompts.append((opt + "::tail", txt[-CHUNK_CHAR_LIMIT:]))
+        else:
+            prompts.append((opt, txt))
+
 
     # First collect all non-strings files
     for fname in TARGET_FILES:

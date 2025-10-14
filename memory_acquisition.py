@@ -26,7 +26,9 @@ try:
     while True:
         for proc in psutil.process_iter(['pid', 'name', 'cpu_percent']):
             try:
-                if proc.info['cpu_percent'] > CPU_THRESHOLD:
+                _ = proc.cpu_percent(interval=0.1)
+                cpu_val = proc.info.get('cpu_percent') or proc.cpu_percent(interval=0.1)
+                if cpu_val > CPU_THRESHOLD:
                     pid = proc.info['pid']
                     name = proc.info['name']
                     cpu = proc.info['cpu_percent']
