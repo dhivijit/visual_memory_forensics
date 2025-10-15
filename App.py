@@ -255,7 +255,7 @@ T1, T2, T3, T4, T5, T6 = tabs
 
 # 1) Forensics
 with T1:
-    st.subheader("Run mem_dump_analysis.py")
+    st.subheader("Run Initial Memory Dump Analysis")
     col1, col2 = st.columns(2)
     with col1:
         cdb_txt = stage_out / "cdb.txt"
@@ -299,7 +299,7 @@ with T1:
 
 # 2) Carve PEs
 with T2:
-    st.subheader("Run carve_pe_from_procdump.py")
+    st.subheader("Run Carve PEs from Dump")
     carved_dir = stage_out / "carved_pe"
     ensure_dir(carved_dir)
 
@@ -321,7 +321,7 @@ with T2:
 
 # 3) Extract Imports
 with T3:
-    st.subheader("Run extract_imports_from_bins.py")
+    st.subheader("Run Extract Imports from Carved PEs")
     pe_results_dir = ensure_dir(stage_out / "pe_results")
     imports_json = pe_results_dir / "imports.json"
 
@@ -336,7 +336,7 @@ with T3:
 
 # 4) LLM Sharded
 with T4:
-    st.subheader("Run llm_call.py (sharded)")
+    st.subheader("Shard and get LLM analysis")
     # Final analysis output folder (persisted)
     final_default = persisted_final_out or str(final_out)
     st.text_input("Final analysis output folder", value=str(final_default), key='final_out_input', on_change=_save_final_out)
@@ -378,9 +378,36 @@ with T4:
     else:
         st.info("No shard_responses.txt yet.")
 
+    # Show individual shard JSONs as collapsible expanders
+    st.markdown("**Shard JSONs (individual responses)**")
+    # common shard filename patterns: shard_*.json, shard-*.json, shard.*.json
+    # include common response naming from llm_call.py (e.g., '000__name.response.json')
+    shard_patterns = ["*.response.json", "*__*.response.json", "shard_*.json", "shard-*.json", "shard.*.json", "shard_*.out.json"]
+    shard_files = []
+    for pat in shard_patterns:
+        shard_files.extend(sorted(out_dir.glob(pat)))
+    # deduplicate while preserving order
+    seen = set()
+    shard_files_unique = []
+    for p in shard_files:
+        if p not in seen:
+            shard_files_unique.append(p)
+            seen.add(p)
+
+    if shard_files_unique:
+        for p in shard_files_unique:
+            try:
+                # Use an expander so each shard JSON is collapsed by default
+                with st.expander(f"{p.name}", expanded=False):
+                    pretty_json_view(p, expand=False)
+            except Exception:
+                st.text(f"Unable to display {p}")
+    else:
+        st.info("No individual shard JSON files found in out_dir yet.")
+
 # 5) LLM Final
 with T5:
-    st.subheader("Run llm_call.py (final aggregation)")
+    st.subheader("LLM Final Aggregation")
     extra_args_final = st.text_input("Extra llm_call final args (optional)", value="--verbose --final-only")
 
     # If a conclusion.txt exists from a previous run, show it at the top for quick review
