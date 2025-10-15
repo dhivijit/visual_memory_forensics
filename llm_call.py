@@ -29,6 +29,31 @@ try:
 except ImportError:
     requests = None
 
+# Prefer reading API keys from repo-local config_store (~/.vmf_config.json) when present.
+try:
+    import config_store
+
+    def resolve_key(secret_name: str, env_fallbacks: List[str]) -> Optional[str]:
+        """Return the configured secret from config_store if present, otherwise check env vars in order."""
+        try:
+            v = config_store.get_secret(secret_name)
+        except Exception:
+            v = None
+        if v:
+            return v
+        for e in env_fallbacks:
+            vv = os.getenv(e)
+            if vv:
+                return vv
+        return None
+except Exception:
+    def resolve_key(secret_name: str, env_fallbacks: List[str]) -> Optional[str]:
+        for e in env_fallbacks:
+            vv = os.getenv(e)
+            if vv:
+                return vv
+        return None
+
 # ---------------- CONFIGURATION ----------------
 
 # TARGET_FILES = [
@@ -310,9 +335,9 @@ def build_prompt(name: str, body: str, truncate: bool = True) -> str:
 def call_gpt_api(prompt: str, model: str, api_key: Optional[str]):
     if requests is None:
         raise RuntimeError("Install requests first")
-    key = api_key or os.getenv("OPENAI_API_KEY")
+    key = api_key or resolve_key('openai_key', ['OPENAI_API_KEY'])
     if not key:
-        raise ValueError("OpenAI API key missing")
+        raise ValueError("OpenAI API key missing — set in ~/.vmf_config.json or OPENAI_API_KEY env var")
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     messages = [
@@ -330,9 +355,9 @@ def call_perplexity_api(prompt: str, api_key: Optional[str] = None) -> Dict[str,
     """
     if requests is None:
         raise RuntimeError("Install 'requests' first (pip install requests)")
-    key = api_key or os.getenv("PERPLEXITY_API_KEY")
+    key = api_key or resolve_key('perplexity_key', ['PERPLEXITY_API_KEY', 'PPLX_API_KEY'])
     if not key:
-        return {"mock": True, "message": "PERPLEXITY_API_KEY missing; returning mock response."}
+        return {"mock": True, "message": "Perplexity API key missing; set in ~/.vmf_config.json or PERPLEXITY_API_KEY/PPLX_API_KEY env var."}
     url = "https://api.perplexity.ai/chat/completions"
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     payload = {
@@ -454,6 +479,7 @@ def main(argv=None):
     parser.add_argument("--gpt-model", default="gpt-4o-mini")
     parser.add_argument("--gpt-key", default=None)
     parser.add_argument("--perplexity-key", default=None)
+    parser.add_argument("--limit", type=int, default=None, help="Maximum number of shards/chunks to process (e.g. --limit 40)")
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--verbose", "-v", action="store_true")
@@ -490,6 +516,16 @@ def main(argv=None):
         return
 
     chunks = prepare_prompts(folder)
+    # Apply user-specified limit on number of shards/chunks (if provided)
+    if args.limit is not None:
+        if args.limit < 0:
+            print("--limit must be >= 0")
+            return
+        if args.limit == 0:
+            print("--limit 0 specified: no shards will be processed.")
+            chunks = []
+        else:
+            chunks = chunks[:args.limit]
     if args.verbose:
         print(f"Prepared {len(chunks)} ASCII-clean, noise-filtered chunks")
 

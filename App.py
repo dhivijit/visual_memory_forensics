@@ -81,26 +81,95 @@ def list_files(folder: Path, patterns=("*.txt", "*.json")):
 # ----------------------------
 st.set_page_config(page_title="LLM Memory-Dump Triage Orchestrator", layout="wide")
 
+# NOTE: API keys and model selection moved to the separate Config page.
+# Try to pre-fill from persisted config (file), then env vars as fallback.
+try:
+    import config_store
+    get_nonsecret = config_store.get_nonsecret
+    get_secret = config_store.get_secret
+    persisted_model = get_nonsecret('llm_model') or os.environ.get('LLM_MODEL', 'Perplexity')
+    persisted_pplx = get_secret('perplexity_key') or os.environ.get("PPLX_API_KEY") or os.environ.get("PERPLEXITY_API_KEY")
+    persisted_openai = get_secret('openai_key') or os.environ.get('OPENAI_API_KEY')
+    persisted_base_out = get_nonsecret('base_out')
+    persisted_stage_out = get_nonsecret('stage_out')
+    persisted_final_out = get_nonsecret('final_out')
+except Exception:
+    # If config_store import fails for any reason, try to read the JSON config file directly
+    cfg_path = Path.home() / ".vmf_config.json"
+    try:
+        if cfg_path.exists():
+            with open(cfg_path, 'r', encoding='utf-8') as fh:
+                cfg = json.load(fh)
+        else:
+            cfg = {}
+        persisted_model = cfg.get('llm_model', os.environ.get('LLM_MODEL', 'Perplexity'))
+        secrets = cfg.get('_secrets', {})
+        persisted_pplx = secrets.get('perplexity_key') or os.environ.get("PPLX_API_KEY") or os.environ.get("PERPLEXITY_API_KEY")
+        persisted_openai = secrets.get('openai_key') or os.environ.get('OPENAI_API_KEY')
+        persisted_base_out = cfg.get('base_out')
+        persisted_stage_out = cfg.get('stage_out')
+        persisted_final_out = cfg.get('final_out')
+    except Exception:
+        persisted_model = os.environ.get('LLM_MODEL', 'Perplexity')
+        persisted_pplx = os.environ.get("PPLX_API_KEY") or os.environ.get("PERPLEXITY_API_KEY")
+        persisted_openai = os.environ.get('OPENAI_API_KEY')
+        persisted_base_out = None
+        persisted_stage_out = None
+        persisted_final_out = None
+
+# Helper to persist non-secret values (use config_store when available, otherwise write JSON directly)
+def _persist_nonsecret(key: str, value: str):
+    try:
+        import config_store as _cs
+        _cs.set_nonsecret(key, value)
+        return
+    except Exception:
+        pass
+    cfg_path = Path.home() / ".vmf_config.json"
+    try:
+        if cfg_path.exists():
+            with open(cfg_path, 'r', encoding='utf-8') as fh:
+                data = json.load(fh)
+        else:
+            data = {}
+    except Exception:
+        data = {}
+    data[key] = value
+    tmp = cfg_path.with_suffix('.tmp')
+    with open(tmp, 'w', encoding='utf-8') as fh:
+        json.dump(data, fh, indent=2)
+    try:
+        os.replace(tmp, cfg_path)
+    except Exception:
+        try:
+            tmp.rename(cfg_path)
+        except Exception:
+            pass
+
+# Callbacks for Streamlit inputs
+def _save_base_out():
+    v = st.session_state.get('base_out_input')
+    if v:
+        _persist_nonsecret('base_out', v)
+
+def _save_stage_out():
+    v = st.session_state.get('stage_out_input')
+    if v:
+        _persist_nonsecret('stage_out', v)
+
+def _save_final_out():
+    v = st.session_state.get('final_out_input')
+    if v:
+        _persist_nonsecret('final_out', v)
+
 st.sidebar.title("⚙️ Configuration")
 python_exe = st.sidebar.text_input("Python executable", value=sys.executable)
 
-base_out = Path(st.sidebar.text_input(
-    "Base output folder",
-    value=str(Path.home() / "Experiments/VMFProjectCodebase/forensics_out")
-))
+# Base output folder (persisted)
+default_base = persisted_base_out or str(Path.home() / "Experiments/VMFProjectCodebase/forensics_out")
+st.sidebar.text_input("Base output folder", value=str(default_base), key="base_out_input", on_change=_save_base_out)
+base_out = Path(st.session_state.get('base_out_input', str(default_base)))
 ensure_dir(base_out)
-
-# NOTE: API keys and model selection moved to the separate Config page.
-# Try to pre-fill from persisted config (keyring or file), then env vars as fallback.
-try:
-    from config_store import get_nonsecret, get_secret
-    persisted_model = get_nonsecret('llm_model', os.environ.get('LLM_MODEL', 'Perplexity'))
-    persisted_pplx = get_secret('perplexity_key') or os.environ.get("PPLX_API_KEY") or os.environ.get("PERPLEXITY_API_KEY")
-    persisted_openai = get_secret('openai_key') or os.environ.get('OPENAI_API_KEY')
-except Exception:
-    persisted_model = os.environ.get('LLM_MODEL', 'Perplexity')
-    persisted_pplx = os.environ.get("PPLX_API_KEY") or os.environ.get("PERPLEXITY_API_KEY")
-    persisted_openai = os.environ.get('OPENAI_API_KEY')
 
 if 'llm_model' not in st.session_state:
     st.session_state['llm_model'] = persisted_model
@@ -108,13 +177,20 @@ if 'perplexity_key' not in st.session_state:
     st.session_state['perplexity_key'] = persisted_pplx or ""
 if 'openai_key' not in st.session_state:
     st.session_state['openai_key'] = persisted_openai or ""
+if 'base_out_input' not in st.session_state:
+    st.session_state['base_out_input'] = str(default_base)
+if 'stage_out_input' not in st.session_state:
+    # prefer persisted_stage_out, then persisted_base_out-based default
+    st.session_state['stage_out_input'] = persisted_stage_out or str((Path(st.session_state['base_out_input']) / "malware_testing"))
+if 'final_out_input' not in st.session_state:
+    st.session_state['final_out_input'] = persisted_final_out or str((Path(st.session_state['base_out_input']) / "malware_finalanalysis"))
 
 scripts_root = Path(st.sidebar.text_input(
     "Scripts folder (where *.py live)",
     value=str(Path.cwd())
 ))
 
-# Optional: default subfolders
+# Optional: default subfolders (based on current base_out)
 default_stage_out = ensure_dir(base_out / "malware_testing")
 final_out = ensure_dir(base_out / "malware_finalanalysis")
 
@@ -155,7 +231,10 @@ with st.container(border=True):
         yara_path = save_uploaded_file(up_yara, ensure_dir(base_out / "yara"))
         st.info(f"Using YARA rules: {yara_path}")
 
-    stage_out = Path(st.text_input("Stage output folder (forensics_out)", value=str(default_stage_out)))
+    # Stage output folder (persisted)
+    stage_default = persisted_stage_out or str(default_stage_out)
+    st.text_input("Stage output folder (forensics_out)", value=str(stage_default), key='stage_out_input', on_change=_save_stage_out)
+    stage_out = Path(st.session_state.get('stage_out_input', str(stage_default)))
     ensure_dir(stage_out)
 
 # ----------------------------
@@ -258,11 +337,13 @@ with T3:
 # 4) LLM Sharded
 with T4:
     st.subheader("Run llm_call.py (sharded)")
-    out_dir = final_out
-    out_dir = Path(st.text_input("Final analysis output folder", value=str(out_dir)))
+    # Final analysis output folder (persisted)
+    final_default = persisted_final_out or str(final_out)
+    st.text_input("Final analysis output folder", value=str(final_default), key='final_out_input', on_change=_save_final_out)
+    out_dir = Path(st.session_state.get('final_out_input', str(final_default)))
     ensure_dir(out_dir)
 
-    extra_args = st.text_input("Extra llm_call args (optional)", value="--verbose")
+    extra_args = st.text_input("Extra llm_call args (optional)", value="--verbose --limit 40")
 
     if st.button("🧩 Build shards & run per-shard LLM", type="primary", use_container_width=True):
         provider = st.session_state.get('llm_model', 'Perplexity')
@@ -300,7 +381,23 @@ with T4:
 # 5) LLM Final
 with T5:
     st.subheader("Run llm_call.py (final aggregation)")
-    extra_args_final = st.text_input("Extra llm_call final args (optional)", value="--verbose --final")
+    extra_args_final = st.text_input("Extra llm_call final args (optional)", value="--verbose --final-only")
+
+    # If a conclusion.txt exists from a previous run, show it at the top for quick review
+    conclusion_candidates = [
+        out_dir / "conclusion.txt",
+        out_dir / "final" / "conclusion.txt",
+    ]
+    for ctxt in conclusion_candidates:
+        if ctxt.exists():
+            try:
+                st.markdown("**Final conclusion (text)**")
+                txt = ctxt.read_text(errors="ignore")
+                # show the conclusion prominently
+                st.text_area("Conclusion (from conclusion.txt)", value=txt, height=300)
+            except Exception:
+                st.text(f"Found conclusion file but couldn't read: {ctxt}")
+            break
 
     if st.button("✅ Run Final Verdict", type="primary", use_container_width=True):
         provider = st.session_state.get('llm_model', 'Perplexity')

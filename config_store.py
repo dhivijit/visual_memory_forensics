@@ -3,14 +3,9 @@ import os
 from pathlib import Path
 from typing import Optional
 
-_SERVICE_NAME = "llm_memory_forensics"
+# Use a simple JSON file in the user's home directory for storing config and secrets.
+# Per user's request, do NOT use keyring or any OS secret stores — plain text file only.
 _CONFIG_FILE = Path.home() / ".vmf_config.json"
-
-try:
-    import keyring
-    _HAS_KEYRING = True
-except Exception:
-    _HAS_KEYRING = False
 
 
 def _read_file_config() -> dict:
@@ -57,35 +52,19 @@ def delete_nonsecret(key: str):
 
 
 def get_secret(name: str) -> Optional[str]:
-    """Get a secret by name. Uses keyring if available, otherwise stored in file under the secrets key (encoded)."""
-    if _HAS_KEYRING:
-        try:
-            return keyring.get_password(_SERVICE_NAME, name)
-        except Exception:
-            return None
-    # fallback to file
+    """Get a secret by name from the local JSON config file.
+
+    Returns None if not found.
+    """
     data = _read_file_config()
     secrets = data.get("_secrets", {})
     return secrets.get(name)
 
 
 def set_secret(name: str, value: str):
-    if _HAS_KEYRING:
-        try:
-            keyring.set_password(_SERVICE_NAME, name, value)
-            return
-        except Exception:
-            pass
-    data = _read_file_config()
-    secrets = data.get("_secrets", {})
-    secrets[name] = value
-    data["_secrets"] = secrets
-    _write_file_config(data)
+    """Set a secret by name into the local JSON config file.
 
-
-def set_secret_force_file(name: str, value: str):
-    """Force saving the secret into the fallback file even if keyring is available.
-    This is insecure compared to keyring; use only if you want on-disk persistence.
+    This stores secrets in plain text inside ~/.vmf_config.json as requested.
     """
     data = _read_file_config()
     secrets = data.get("_secrets", {})
@@ -94,13 +73,12 @@ def set_secret_force_file(name: str, value: str):
     _write_file_config(data)
 
 
+def set_secret_force_file(name: str, value: str):
+    """Alias to set_secret for backwards compatibility."""
+    set_secret(name, value)
+
+
 def delete_secret(name: str):
-    if _HAS_KEYRING:
-        try:
-            keyring.delete_password(_SERVICE_NAME, name)
-            return
-        except Exception:
-            pass
     data = _read_file_config()
     secrets = data.get("_secrets", {})
     if name in secrets:
