@@ -30,6 +30,7 @@ import os, json, argparse
 from pathlib import Path
 import pefile
 import traceback
+import sys
 import struct
 import re
 
@@ -66,15 +67,34 @@ def extract_imports_from_pe(path, main_only=False, resolve_ordinals=False):
         "dynamic_resolution_suspected": False,
     }
 
+    # helper: sanitize API/function names — allow only reasonable printable
+    # API-like tokens (letters, digits, underscore, dot, @, ?, and parentheses)
+    import re as _re
+    _api_name_re = _re.compile(r"^[A-Za-z0-9_@\.?()\-]{2,128}$")
+
+    def _is_valid_name(n: str) -> bool:
+        if not n:
+            return False
+        # drop names with explicit unicode escape sequences like '\u1234'
+        if '\\u' in n.lower():
+            return False
+        # drop names with backslashes or control chars
+        if '\\' in n or any(ord(c) < 32 for c in n):
+            return False
+        # match allowed pattern
+        return bool(_api_name_re.match(n))
+
     if hasattr(pe, "DIRECTORY_ENTRY_IMPORT"):
         for entry in pe.DIRECTORY_ENTRY_IMPORT:
             dll_name = entry.dll.decode(errors="ignore")
             funcs = []
             for imp in entry.imports:
+                # Skip ordinal-based imports entirely (they are noisy and not useful
+                # for our reporting). Only record named imports and sanitize them.
                 if imp.name:
-                    funcs.append(imp.name.decode(errors="ignore"))
-                elif hasattr(imp, "ordinal"):
-                    funcs.append(f"ordinal_{imp.ordinal}")
+                    name = imp.name.decode(errors="ignore")
+                    if _is_valid_name(name):
+                        funcs.append(name)
             info["imports"][dll_name] = funcs
 
     # If pefile didn't find any imports, attempt a best-effort heuristic
@@ -169,9 +189,6 @@ def extract_imports_from_pe(path, main_only=False, resolve_ordinals=False):
                                             if val == 0:
                                                 break
                                             # IMAGE_ORDINAL_FLAG64
-                                            if (val & 0x8000000000000000) != 0:
-                                                ordinal = val & 0xffff
-                                                funcs.append(f"ordinal_{ordinal}")
                                             else:
                                                 hint_name_rva = val & 0xffffffff
                                                 try:
@@ -181,7 +198,9 @@ def extract_imports_from_pe(path, main_only=False, resolve_ordinals=False):
                                                         i = hn_raw + 2
                                                         end = data.find(b'\x00', i)
                                                         if end != -1:
-                                                            funcs.append(data[i:end].decode(errors='ignore'))
+                                                            candidate = data[i:end].decode(errors='ignore')
+                                                            if _is_valid_name(candidate):
+                                                                funcs.append(candidate)
                                                 except Exception:
                                                     pass
                                         else:
@@ -190,8 +209,8 @@ def extract_imports_from_pe(path, main_only=False, resolve_ordinals=False):
                                                 break
                                             # IMAGE_ORDINAL_FLAG32
                                             if (val & 0x80000000) != 0:
-                                                ordinal = val & 0xffff
-                                                funcs.append(f"ordinal_{ordinal}")
+                                                # Skip ordinal-based entries
+                                                pass
                                             else:
                                                 hint_name_rva = val & 0xffffffff
                                                 try:
@@ -200,7 +219,9 @@ def extract_imports_from_pe(path, main_only=False, resolve_ordinals=False):
                                                         i = hn_raw + 2
                                                         end = data.find(b'\x00', i)
                                                         if end != -1:
-                                                            funcs.append(data[i:end].decode(errors='ignore'))
+                                                            candidate = data[i:end].decode(errors='ignore')
+                                                            if _is_valid_name(candidate):
+                                                                funcs.append(candidate)
                                                 except Exception:
                                                     pass
                                         idx += thunk_size
@@ -218,6 +239,14 @@ def extract_imports_from_pe(path, main_only=False, resolve_ordinals=False):
         for fn in funcs:
             if fn.lower().startswith("getprocaddress") or fn.lower().startswith("loadlibrary"):
                 info["dynamic_resolution_suspected"] = True
+
+    # Filter out any remaining ordinal_* entries if present (defensive)
+    try:
+        for dll in list(info.get('imports', {}).keys()):
+            filtered = [f for f in info['imports'][dll] if not f.lower().startswith('ordinal_')]
+            info['imports'][dll] = filtered
+    except Exception:
+        pass
 
     # If requested, filter to main DLLs and optionally resolve ordinals
     if main_only or resolve_ordinals:
@@ -337,7 +366,19 @@ def main():
     with open(output, "w") as jf:
         json.dump(report, jf, indent=2)
 
-    print(f"\n[✓] Done. Results saved to {output} ({len(all_entries)} PEs parsed).")
+    # Avoid UnicodeEncodeError on consoles that don't support certain
+    # characters (common on Windows). Use checkmark when supported,
+    # otherwise fall back to 'v'.
+    def safe_checkmark():
+        chk = "\u2713"
+        enc = getattr(sys.stdout, "encoding", None) or sys.getdefaultencoding()
+        try:
+            chk.encode(enc)
+            return chk
+        except Exception:
+            return "v"
+
+    print(f"\n[{safe_checkmark()}] Done. Results saved to {output} ({len(all_entries)} PEs parsed).")
 
 
 if __name__ == "__main__":

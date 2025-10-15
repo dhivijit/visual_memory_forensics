@@ -8,6 +8,7 @@ from pathlib import Path
 from datetime import datetime
 
 import streamlit as st
+import logger
 
 # ----------------------------
 # Utility helpers
@@ -15,7 +16,9 @@ import streamlit as st
 
 def run_cmd(cmd, cwd=None):
     """Run a command and stream its output line-by-line to Streamlit."""
-    st.code(" ".join([str(c) for c in cmd]), language="bash")
+    cmd_str = " ".join([str(c) for c in cmd])
+    st.markdown(f"**Running:** `{cmd_str}`")
+    logger.log_command(cmd)
     process = subprocess.Popen(
         cmd,
         cwd=cwd,
@@ -30,6 +33,9 @@ def run_cmd(cmd, cwd=None):
         lines.append(line)
         log.text("".join(lines[-200:]))  # keep last 200 lines visible
     ret = process.wait()
+    # capture final output snippet for logging (don't re-run entire capture)
+    final_output = "".join(lines[-200:])
+    logger.log_output(cmd, ret, final_output)
     if ret != 0:
         st.error(f"Command exited with non-zero status: {ret}")
     else:

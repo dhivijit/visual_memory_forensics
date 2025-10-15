@@ -22,6 +22,17 @@ if 'perplexity_key' not in st.session_state:
 if 'openai_key' not in st.session_state:
     st.session_state['openai_key'] = persisted_openai or ""
 
+# Provide a reload button so users can refresh the UI from persisted store (file or keyring)
+if st.button("Reload saved config"):
+    # re-read persisted values and update session state, then rerun so UI refreshes
+    persisted_model = config_store.get_nonsecret('llm_model', os.environ.get('LLM_MODEL', 'Perplexity'))
+    persisted_perplexity = config_store.get_secret('perplexity_key') or os.environ.get("PPLX_API_KEY") or os.environ.get("PERPLEXITY_API_KEY")
+    persisted_openai = config_store.get_secret('openai_key') or os.environ.get('OPENAI_API_KEY')
+    st.session_state['llm_model'] = persisted_model
+    st.session_state['perplexity_key'] = persisted_perplexity or ""
+    st.session_state['openai_key'] = persisted_openai or ""
+    st.experimental_rerun()
+
 col1, col2 = st.columns([2, 3])
 with col1:
     model = st.selectbox("Default LLM Provider", options=["Perplexity", "OpenAI"], index=["Perplexity", "OpenAI"].index(st.session_state.get('llm_model', 'Perplexity')))
@@ -42,14 +53,24 @@ if st.button("Save config"):
     # persist secrets
     if st.session_state.get('perplexity_key'):
         if save_to_disk:
+            # write to file and remove any keyring entry so the file value is used
             config_store.set_secret_force_file('perplexity_key', st.session_state.get('perplexity_key'))
+            try:
+                config_store.delete_secret('perplexity_key')
+            except Exception:
+                pass
         else:
             config_store.set_secret('perplexity_key', st.session_state.get('perplexity_key'))
     else:
         config_store.delete_secret('perplexity_key')
     if st.session_state.get('openai_key'):
         if save_to_disk:
+            # write to file and remove any keyring entry so the file value is used
             config_store.set_secret_force_file('openai_key', st.session_state.get('openai_key'))
+            try:
+                config_store.delete_secret('openai_key')
+            except Exception:
+                pass
         else:
             config_store.set_secret('openai_key', st.session_state.get('openai_key'))
     else:

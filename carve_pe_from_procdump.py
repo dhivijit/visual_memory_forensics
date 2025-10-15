@@ -121,7 +121,7 @@ def carve_pes(dump_path, out_dir):
 
                 count += 1
                 if count >= MAX_CANDIDATES:
-                    print("Reached max candidates — stopping.")
+                    print("Reached max candidates - stopping.")
                     break
 
                 offset = pos + 2
@@ -136,7 +136,8 @@ def carve_pes(dump_path, out_dir):
         with open(index_path, "w") as jf:
             json.dump(results, jf, indent=2)
 
-        print(f"\n[✓] Done. Carved {len(results)} candidates into: {out_dir}\nSummary: {index_path}")
+    # Use ASCII-friendly output to avoid Windows console encoding issues
+    print(f"\n[OK] Done. Carved {len(results)} candidates into: {out_dir}\nSummary: {index_path}")
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
