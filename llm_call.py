@@ -475,8 +475,8 @@ def send_final_analysis(out_dir: str, api: str, gpt_model: str, gpt_key: Optiona
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Send selected forensic outputs to LLM (ASCII only, noise-filtered).")
     parser.add_argument("--folder", "-f", required=True, help="Folder containing forensic files")
-    parser.add_argument("--api", choices=["gpt","perplexity"], default="perplexity")
-    parser.add_argument("--gpt-model", default="gpt-4o-mini")
+    parser.add_argument("--api", choices=["gpt", "perplexity"], default=None)
+    parser.add_argument("--gpt-model", default="gpt-5-2025-08-07")
     parser.add_argument("--gpt-key", default=None)
     parser.add_argument("--perplexity-key", default=None)
     parser.add_argument("--limit", type=int, default=None, help="Maximum number of shards/chunks to process (e.g. --limit 40)")
@@ -497,6 +497,24 @@ def main(argv=None):
     if not args.final_only:
         with open(final_txt_path, "w", encoding="utf-8") as f:
             f.write("=== LLM Triaged Analysis (Aggregated) ===\n\n")
+
+    # Determine which API to use automatically
+    if not args.api:
+        # Auto-select based on key presence
+        gpt_key = args.gpt_key or resolve_key('openai_key', ['OPENAI_API_KEY'])
+        pplx_key = args.perplexity_key or resolve_key('perplexity_key', ['PERPLEXITY_API_KEY', 'PPLX_API_KEY'])
+
+        if gpt_key:
+            args.api = "gpt"
+            args.gpt_key = gpt_key
+            print("[INFO] GPT key detected — using OpenAI GPT endpoint.")
+        elif pplx_key:
+            args.api = "perplexity"
+            args.perplexity_key = pplx_key
+            print("[INFO] Perplexity key detected — using Perplexity endpoint.")
+        else:
+            print("[ERROR] No API key found for GPT or Perplexity. Please provide one.")
+            sys.exit(1)
 
     # If the user wants to only run the final step, do it now using the existing final_analysis.txt
     if args.final_only:

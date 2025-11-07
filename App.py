@@ -79,7 +79,7 @@ def list_files(folder: Path, patterns=("*.txt", "*.json")):
 # ----------------------------
 # Sidebar configuration
 # ----------------------------
-st.set_page_config(page_title="LLM Memory-Dump Triage Orchestrator", layout="wide")
+st.set_page_config(page_title="VISUAL MEMORY FORENSICS: AN LLM-DRIVEN PROCESS-CENTRIC FRAMEWORK FOR DETECTING FILELESS CRYPTOJACKING MALWARE", layout="wide")
 
 # NOTE: API keys and model selection moved to the separate Config page.
 # Try to pre-fill from persisted config (file), then env vars as fallback.
@@ -200,13 +200,14 @@ mode = st.sidebar.radio("Dump Source", ["Upload .dmp", "Use local path"], index=
 # ----------------------------
 # Header
 # ----------------------------
-st.title("🧠 LLM-Driven Memory Dump Triage — Streamlit Orchestrator")
+st.title("🧠 VISUAL MEMORY FORENSICS")
+st.caption("AN LLM-DRIVEN PROCESS-CENTRIC FRAMEWORK FOR DETECTING FILELESS CRYPTOJACKING MALWARE.")
 st.caption("Run your full dump → forensics → carving → imports → LLM (shards → final) pipeline without touching the CLI.")
 
 # ----------------------------
 # Step 0: Select or upload dump + optional YARA
 # ----------------------------
-st.header("Step 0 — Select Memory Dump & Optional YARA Rules")
+st.header("Select Memory Dump & Optional YARA Rules")
 
 with st.container(border=True):
     dump_path = None
@@ -358,7 +359,7 @@ with T4:
             if not key:
                 st.error("OpenAI key is required for the selected model.")
                 st.stop()
-            key_flag = ["--openai-key", key]
+            key_flag = ["--gpt-key", key]
         else:
             key_flag = []
 
@@ -439,7 +440,7 @@ with T5:
             if not key:
                 st.error("OpenAI key is required for the selected model.")
                 st.stop()
-            key_flag = ["--openai-key", key]
+            key_flag = ["--gpt-key", key]
         else:
             key_flag = []
 

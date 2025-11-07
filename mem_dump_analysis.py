@@ -8,8 +8,6 @@ Usage:
 Produces:
   - cdb.txt                    : raw WinDbg/cdb output
   - strings.txt                : ascii + utf-16 strings
-  - pe_sieve_report.json       : pe-sieve JSON if run
-  - pe_sieve_dumps/            : any dumped in-memory PEs/shellcode
   - analyzer_report.json       : combined, LLM-friendly JSON
   - per-dumped-file analysis (rizin outputs, hashes, yara matches)
 """
