@@ -332,22 +332,117 @@ def build_prompt(name: str, body: str, truncate: bool = True) -> str:
 
 # ---------------- API CALLS ----------------
 
-def call_gpt_api(prompt: str, model: str, api_key: Optional[str]):
-    if requests is None:
-        raise RuntimeError("Install requests first")
+def call_gpt_api(prompt: str, model: str, api_key: Optional[str]) -> Any:
+    """
+    Call OpenAI Responses API and attempt to return a parsed JSON object
+    when the assistant's reply contains JSON text (common pattern in your example).
+    If parsing fails, returns a dict with 'raw_assistant_text' and 'raw_api_response'.
+    """
+    # resolve_key should be available in your environment (keeps your original behavior)
     key = api_key or resolve_key('openai_key', ['OPENAI_API_KEY'])
     if not key:
         raise ValueError("OpenAI API key missing — set in ~/.vmf_config.json or OPENAI_API_KEY env var")
-    url = "https://api.openai.com/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-    messages = [
-        {"role": "system", "content": "You are a precise malware analyst. Respond with strict JSON."},
-        {"role": "user", "content": prompt}
-    ]
-    payload = {"model": model, "messages": messages, "max_tokens": 1200, "temperature": 0.0}
+
+    url = "https://api.openai.com/v1/responses"
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": model,
+        "input": prompt,
+        "max_output_tokens": 4000
+    }
+
     r = requests.post(url, headers=headers, json=payload, timeout=120)
-    r.raise_for_status()
-    return r.json()
+    try:
+        r.raise_for_status()
+    except Exception as e:
+        raise RuntimeError(f"OpenAI API request failed: {r.status_code} {r.reason} - {r.text}") from e
+
+    try:
+        resp = r.json()
+    except ValueError:
+        # Not JSON (very unlikely), return status/text
+        return {"error": "invalid-json-response", "status_code": r.status_code, "text": r.text}
+
+    # Helper: attempt to parse a text blob as JSON
+    def try_parse_json(text: str):
+        # 1) direct parse
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+
+        # 2) try to find the first balanced JSON object { ... } and parse it
+        #    This handles cases where the model wrapped JSON in code fences or extra text.
+        #    We'll use a simple brace-balancing scan for the first '{' to matching '}'.
+        start = text.find('{')
+        if start == -1:
+            return None
+
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == '{':
+                depth += 1
+            elif text[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start:i+1]
+                    try:
+                        return json.loads(candidate)
+                    except Exception:
+                        # try minor cleanup: replace fancy quotes, remove trailing commas
+                        cleaned = candidate.replace('“', '"').replace('”', '"').replace("’,", '",')
+                        # remove trailing commas before } or ]
+                        cleaned = re.sub(r',\s*([}\]])', r'\1', cleaned)
+                        try:
+                            return json.loads(cleaned)
+                        except Exception:
+                            return None
+        return None
+
+    # find assistant output_text items (there can be multiple)
+    assistant_texts = []
+    outputs = resp.get("output", []) or []
+
+    for out_item in outputs:
+        # The item might contain "content": [ { "type":"output_text", "text": "..." }, ... ]
+        content = out_item.get("content", []) if isinstance(out_item, dict) else []
+        if not isinstance(content, list):
+            continue
+        for c in content:
+            if isinstance(c, dict) and c.get("type") == "output_text":
+                t = c.get("text", "")
+                if t:
+                    assistant_texts.append(t)
+
+    # if no output_text found, fallback to other possible locations
+    if not assistant_texts:
+        # try to find a top-level text (older/other shapes)
+        top_text = resp.get("text")
+        if isinstance(top_text, dict):
+            # some responses return a structure like {"format":..., "verbosity":..., "text":"..."}
+            maybe = top_text.get("text")
+            if isinstance(maybe, str):
+                assistant_texts.append(maybe)
+        elif isinstance(top_text, str):
+            assistant_texts.append(top_text)
+
+    # Try parsing each assistant text until success
+    for t in assistant_texts:
+        parsed = try_parse_json(t)
+        if parsed is not None:
+            return parsed  # parsed JSON found, return it directly
+
+    # No parsed JSON found — return helpful debug object containing raw assistant text(s)
+    return {
+        "parsed": None,
+        "raw_assistant_texts": assistant_texts,
+        "raw_api_response": resp
+    }
+
 
 def call_perplexity_api(prompt: str, api_key: Optional[str] = None) -> Dict[str, Any]:
     """
@@ -476,7 +571,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Send selected forensic outputs to LLM (ASCII only, noise-filtered).")
     parser.add_argument("--folder", "-f", required=True, help="Folder containing forensic files")
     parser.add_argument("--api", choices=["gpt", "perplexity"], default=None)
-    parser.add_argument("--gpt-model", default="gpt-5-2025-08-07")
+    parser.add_argument("--gpt-model", default="gpt-5-mini-2025-08-07")
     parser.add_argument("--gpt-key", default=None)
     parser.add_argument("--perplexity-key", default=None)
     parser.add_argument("--limit", type=int, default=None, help="Maximum number of shards/chunks to process (e.g. --limit 40)")
