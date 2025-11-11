@@ -718,7 +718,7 @@ def main(argv=None):
         description="Send selected forensic outputs to LLM (ASCII only, noise-filtered).")
     parser.add_argument("--folder", "-f", required=True,
                         help="Folder containing forensic files")
-    parser.add_argument("--api", choices=["gpt", "perplexity"], default=None)
+    parser.add_argument("--api", choices=["gpt", "perplexity", "anthropic"], default=None)
     parser.add_argument("--gpt-model", default="gpt-5-mini-2025-08-07")
     parser.add_argument("--gpt-key", default=None)
     parser.add_argument("--perplexity-key", default=None)
@@ -747,22 +747,20 @@ def main(argv=None):
         with open(final_txt_path, "w", encoding="utf-8") as f:
             f.write("=== LLM Triaged Analysis (Aggregated) ===\n\n")
 
-    # Determine which API to use automatically
+    # ---------------- AUTO-DETECT API BASED ON PROVIDED KEYS ----------------
     if not args.api:
-        # Prefer explicit CLI keys first (user intent wins). If none provided,
-        # fall back to config/env keys via resolve_key.
-        if args.gpt_key:
+        # Highest priority: explicitly passed CLI keys
+        if args.gpt_key and args.gpt_key.strip():
             args.api = "gpt"
-            # leave args.gpt_key as provided by CLI
             print("[INFO] GPT key detected (CLI) — using OpenAI GPT endpoint.")
-        elif args.anthropic_key:
+        elif args.anthropic_key and args.anthropic_key.strip():
             args.api = "anthropic"
             print("[INFO] Anthropic key detected (CLI) — using Anthropic/Claude endpoint.")
-        elif args.perplexity_key:
+        elif args.perplexity_key and args.perplexity_key.strip():
             args.api = "perplexity"
             print("[INFO] Perplexity key detected (CLI) — using Perplexity endpoint.")
         else:
-            # No explicit CLI keys: check config/env
+            # Secondary: try config/env variables
             gpt_key = resolve_key('openai_key', ['OPENAI_API_KEY'])
             anthropic_key = resolve_key('anthropic_key', ['ANTHROPIC_API_KEY'])
             pplx_key = resolve_key('perplexity_key', ['PERPLEXITY_API_KEY', 'PPLX_API_KEY'])
@@ -770,20 +768,20 @@ def main(argv=None):
             if gpt_key:
                 args.api = "gpt"
                 args.gpt_key = gpt_key
-                print("[INFO] GPT key detected — using OpenAI GPT endpoint.")
+                print("[INFO] GPT key detected (env/config) — using OpenAI GPT endpoint.")
             elif anthropic_key:
                 args.api = "anthropic"
                 args.anthropic_key = anthropic_key
-                print("[INFO] Anthropic key detected — using Anthropic/Claude endpoint.")
+                print("[INFO] Anthropic key detected (env/config) — using Anthropic/Claude endpoint.")
             elif pplx_key:
                 args.api = "perplexity"
                 args.perplexity_key = pplx_key
-                print("[INFO] Perplexity key detected — using Perplexity endpoint.")
+                print("[INFO] Perplexity key detected (env/config) — using Perplexity endpoint.")
             else:
                 print("[ERROR] No API key found for GPT, Anthropic, or Perplexity. Please provide one.")
                 sys.exit(1)
 
-    # If the user wants to only run the final step, do it now using the existing final_analysis.txt
+    # ---------------- FINAL-ONLY MODE ----------------
     if args.final_only:
         if args.verbose:
             print("Running final-only: sending existing final_analysis.txt to LLM")
@@ -802,8 +800,8 @@ def main(argv=None):
         print("Final-only run complete. Exiting.")
         return
 
+    # ---------------- PREPARE CHUNKS ----------------
     chunks = prepare_prompts(folder)
-    # Apply user-specified limit on number of shards/chunks (if provided)
     if args.limit is not None:
         if args.limit < 0:
             print("--limit must be >= 0")
@@ -813,9 +811,11 @@ def main(argv=None):
             chunks = []
         else:
             chunks = chunks[:args.limit]
+
     if args.verbose:
         print(f"Prepared {len(chunks)} ASCII-clean, noise-filtered chunks")
 
+    # ---------------- SEND TO API ----------------
     for i, (name, text) in enumerate(chunks):
         safe = re.sub(r"[^A-Za-z0-9._-]", "_", name)[:120]
         prompt = build_prompt(name, text)
@@ -828,17 +828,21 @@ def main(argv=None):
                 print(f"[DRY] {prompt_path}")
             continue
 
-        # Call the selected API
         try:
             if args.api == "gpt":
-                resp = call_gpt_api(
-                    prompt, model=args.gpt_model, api_key=args.gpt_key)
-                # Try to extract assistant text for aggregator
+                resp = call_gpt_api(prompt, model=args.gpt_model, api_key=args.gpt_key)
                 agg_text = ""
                 try:
                     if "choices" in resp and resp["choices"]:
-                        agg_text = resp["choices"][0]["message"].get(
-                            "content", "")
+                        agg_text = resp["choices"][0]["message"].get("content", "")
+                except Exception:
+                    agg_text = ""
+            elif args.api == "anthropic":
+                resp = call_claude_api(prompt, model=args.anthropic_model, api_key=args.anthropic_key)
+                agg_text = ""
+                try:
+                    if "completion" in resp and isinstance(resp["completion"], str):
+                        agg_text = resp["completion"]
                 except Exception:
                     agg_text = ""
             else:
@@ -848,20 +852,18 @@ def main(argv=None):
             resp = {"error": str(e)}
             agg_text = ""
 
-        # Save raw JSON response
         out_json = os.path.join(out_dir, f"{i:03d}__{safe}.response.json")
         with open(out_json, "w", encoding="utf-8") as f:
             json.dump(resp, f, indent=2, ensure_ascii=False)
+
         if args.verbose:
             print(f"[{i+1}/{len(chunks)}] saved -> {out_json}")
 
-        # Append to final_analysis.txt
         with open(final_txt_path, "a", encoding="utf-8") as f:
             f.write(f"\n--- Chunk {i+1}/{len(chunks)}: {name} ---\n")
             if agg_text:
                 f.write(agg_text.strip() + "\n")
             else:
-                # fallback: write compact JSON
                 try:
                     f.write(json.dumps(resp, ensure_ascii=False) + "\n")
                 except Exception:
@@ -873,7 +875,6 @@ def main(argv=None):
     print("Prompts/responses in:", out_dir)
     print("Aggregated text report:", final_txt_path)
 
-    # If requested, send the aggregated final_analysis.txt to the LLM for a single-conclusion pass
     if args.final:
         if args.verbose:
             print("Sending final aggregated analysis to LLM (--final)")
