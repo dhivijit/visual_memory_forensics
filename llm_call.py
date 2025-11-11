@@ -36,30 +36,6 @@ try:
 except ImportError:
     requests = None
 
-# Prefer reading API keys from repo-local config_store (~/.vmf_config.json) when present.
-try:
-    import config_store
-
-    def resolve_key(secret_name: str, env_fallbacks: List[str]) -> Optional[str]:
-        """Return the configured secret from config_store if present, otherwise check env vars in order."""
-        try:
-            v = config_store.get_secret(secret_name)
-        except Exception:
-            v = None
-        if v:
-            return v
-        for e in env_fallbacks:
-            vv = os.getenv(e)
-            if vv:
-                return vv
-        return None
-except Exception:
-    def resolve_key(secret_name: str, env_fallbacks: List[str]) -> Optional[str]:
-        for e in env_fallbacks:
-            vv = os.getenv(e)
-            if vv:
-                return vv
-        return None
 
 # ---------------- CONFIGURATION ----------------
 
@@ -237,10 +213,11 @@ def call_claude_api(prompt: str, model: str, api_key: Optional[str] = None) -> A
     if requests is None:
         raise RuntimeError("Install 'requests' first (pip install requests)")
 
-    key = api_key or resolve_key('anthropic_key', ['ANTHROPIC_API_KEY'])
+    # Require explicit CLI-provided key. Do NOT fall back to config_store or env.
+    key = api_key
     if not key:
         raise ValueError(
-            "Anthropic API key missing — set in ~/.vmf_config.json or ANTHROPIC_API_KEY env var")
+            "Anthropic API key missing — must be provided via the --anthropic-key CLI argument")
 
     url = "https://api.anthropic.com/v1/messages"
     headers = {
@@ -502,11 +479,11 @@ def call_gpt_api(prompt: str, model: str, api_key: Optional[str]) -> Any:
     when the assistant's reply contains JSON text (common pattern in your example).
     If parsing fails, returns a dict with 'raw_assistant_text' and 'raw_api_response'.
     """
-    # resolve_key should be available in your environment (keeps your original behavior)
-    key = api_key or resolve_key('openai_key', ['OPENAI_API_KEY'])
+    # Require explicit CLI-provided key. Do NOT fall back to config_store or env.
+    key = api_key
     if not key:
         raise ValueError(
-            "OpenAI API key missing — set in ~/.vmf_config.json or OPENAI_API_KEY env var")
+            "OpenAI API key missing — must be provided via the --gpt-key CLI argument")
 
     url = "https://api.openai.com/v1/responses"
     headers = {
@@ -583,10 +560,11 @@ def call_perplexity_api(prompt: str, api_key: Optional[str] = None) -> Dict[str,
     """
     if requests is None:
         raise RuntimeError("Install 'requests' first (pip install requests)")
-    key = api_key or resolve_key(
-        'perplexity_key', ['PERPLEXITY_API_KEY', 'PPLX_API_KEY'])
+    # Require explicit CLI-provided key. Do NOT fall back to config_store or env.
+    key = api_key
     if not key:
-        return {"mock": True, "message": "Perplexity API key missing; set in ~/.vmf_config.json or PERPLEXITY_API_KEY/PPLX_API_KEY env var."}
+        raise ValueError(
+            "Perplexity API key missing — must be provided via the --perplexity-key CLI argument")
     url = "https://api.perplexity.ai/chat/completions"
     headers = {"Authorization": f"Bearer {key}",
                "Content-Type": "application/json"}
@@ -760,26 +738,9 @@ def main(argv=None):
             args.api = "perplexity"
             print("[INFO] Perplexity key detected (CLI) — using Perplexity endpoint.")
         else:
-            # Secondary: try config/env variables
-            gpt_key = resolve_key('openai_key', ['OPENAI_API_KEY'])
-            anthropic_key = resolve_key('anthropic_key', ['ANTHROPIC_API_KEY'])
-            pplx_key = resolve_key('perplexity_key', ['PERPLEXITY_API_KEY', 'PPLX_API_KEY'])
-
-            if gpt_key:
-                args.api = "gpt"
-                args.gpt_key = gpt_key
-                print("[INFO] GPT key detected (env/config) — using OpenAI GPT endpoint.")
-            elif anthropic_key:
-                args.api = "anthropic"
-                args.anthropic_key = anthropic_key
-                print("[INFO] Anthropic key detected (env/config) — using Anthropic/Claude endpoint.")
-            elif pplx_key:
-                args.api = "perplexity"
-                args.perplexity_key = pplx_key
-                print("[INFO] Perplexity key detected (env/config) — using Perplexity endpoint.")
-            else:
-                print("[ERROR] No API key found for GPT, Anthropic, or Perplexity. Please provide one.")
-                sys.exit(1)
+            # Strict policy: do not read from config_store or environment — require CLI-provided keys
+            print("[ERROR] No API key provided via CLI. Please pass --gpt-key, --anthropic-key, or --perplexity-key.")
+            sys.exit(1)
 
     # ---------------- FINAL-ONLY MODE ----------------
     if args.final_only:
