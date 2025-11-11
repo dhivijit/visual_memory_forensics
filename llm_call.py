@@ -21,7 +21,14 @@ Notes:
  - Perplexity API call is a placeholder (replace URL/payload with the real endpoint).
 """
 
-import os, sys, argparse, json, time, re, textwrap, math
+import os
+import sys
+import argparse
+import json
+import time
+import re
+import textwrap
+import math
 from typing import Optional, Dict, Any, List
 
 try:
@@ -72,6 +79,7 @@ TARGET_FILES = [
     "strings.txt",
 ]
 
+
 def discover_optional_files(root):
     found = []
     # any yara_*.txt in root
@@ -79,20 +87,20 @@ def discover_optional_files(root):
         if name.lower().startswith("yara_") and name.lower().endswith(".txt"):
             found.append(name)
     # support both pe_results/imports.json and carved_pe/imports.json
-    for cand in [os.path.join("pe_results","imports.json"),
-                 os.path.join("carved_pe","imports.json")]:
+    for cand in [os.path.join("pe_results", "imports.json"),
+                 os.path.join("carved_pe", "imports.json")]:
         if os.path.exists(os.path.join(root, cand)):
             found.append(cand)
     return found
 
 
 MINER_KEYWORDS = [
-    "stratum","minexmr","xmr","pool","miner","cryptonight","randomx",
-    "opencl","cuda","vulkan","vkCreate","vkDestroy","clCreate",
-    "VirtualAlloc","VirtualProtect","GetProcAddress","WriteProcessMemory",
-    "CreateRemoteThread","LoadLibrary","CryptAcquireContext","CryptCreateHash",
-    "powershell","mshta","cmd.exe","injected","InjectedMemory","CodeInjection",
-    "Watchdog","GPU","gpu-process"
+    "stratum", "minexmr", "xmr", "pool", "miner", "cryptonight", "randomx",
+    "opencl", "cuda", "vulkan", "vkCreate", "vkDestroy", "clCreate",
+    "VirtualAlloc", "VirtualProtect", "GetProcAddress", "WriteProcessMemory",
+    "CreateRemoteThread", "LoadLibrary", "CryptAcquireContext", "CryptCreateHash",
+    "powershell", "mshta", "cmd.exe", "injected", "InjectedMemory", "CodeInjection",
+    "Watchdog", "GPU", "gpu-process"
 ]
 
 STRINGS_HEAD_LINES = 400
@@ -102,24 +110,31 @@ CHUNK_CHAR_LIMIT = 3800
 
 # Noise thresholds (tweakable)
 MIN_LINE_LEN = 4
-ALNUM_RATIO_MIN = 0.25      # drop lines with <25% alnum (unless containing a keyword)
-REPEAT_RUN_LEN = 6          # drop if any char repeats >= 6 consecutively (unless keyword)
-SMALL_CHARSET_DROP_LEN = 50 # drop if len>50 and unique charset size <= 4 (unless keyword)
+# drop lines with <25% alnum (unless containing a keyword)
+ALNUM_RATIO_MIN = 0.25
+# drop if any char repeats >= 6 consecutively (unless keyword)
+REPEAT_RUN_LEN = 6
+# drop if len>50 and unique charset size <= 4 (unless keyword)
+SMALL_CHARSET_DROP_LEN = 50
 
 # ---------------- HELPERS ----------------
+
 
 def clean_ascii(s: str) -> str:
     """Keep only basic ASCII characters (32–126 range and newline/tab)."""
     return ''.join(ch for ch in s if 32 <= ord(ch) <= 126 or ch in '\n\r\t')
 
+
 def has_long_repeat(line: str, n: int = REPEAT_RUN_LEN) -> bool:
     """Detect long repeated-char runs like ')))))))'."""
     return re.search(r'(.)\1{' + str(n-1) + r',}', line) is not None
+
 
 def is_mostly_symbols(line: str) -> bool:
     """True if line is composed only of whitespace and punctuation."""
     # \w = [A-Za-z0-9_]; if removing all non-word leaves nothing, it's all symbols/space
     return re.fullmatch(r'[\W_ \t\r\n]+', line) is not None
+
 
 def alnum_ratio(line: str) -> float:
     if not line:
@@ -127,13 +142,16 @@ def alnum_ratio(line: str) -> float:
     alnum = sum(ch.isalnum() for ch in line)
     return alnum / max(1, len(line))
 
+
 def is_low_charset_variety(line: str) -> bool:
     """Very low character diversity -> likely noise art."""
     return len(line) > SMALL_CHARSET_DROP_LEN and len(set(line)) <= 4
 
+
 def contains_keyword(line: str, keywords: List[str]) -> bool:
     L = line.lower()
     return any(k.lower() in L for k in keywords)
+
 
 def is_noise_line(line: str, keywords: List[str]) -> bool:
     """Decide if a line from strings.txt is gibberish/noise and should be skipped."""
@@ -156,9 +174,11 @@ def is_noise_line(line: str, keywords: List[str]) -> bool:
         return True
     return False
 
+
 def load_text(path: str) -> str:
     with open(path, 'r', errors='replace') as f:
         return clean_ascii(f.read())
+
 
 def load_json_text(path: str) -> str:
     try:
@@ -169,10 +189,151 @@ def load_json_text(path: str) -> str:
         txt = load_text(path)
     return clean_ascii(txt)
 
+
+def try_parse_json(text: str):
+    """Attempt to extract/parse the first JSON object from a text blob.
+    Returns a parsed Python object or None if parsing failed.
+    This is shared by multiple API callers.
+    """
+    # 1) direct parse
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    # 2) try to find the first balanced JSON object { ... } and parse it
+    start = text.find('{')
+    if start == -1:
+        return None
+
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == '{':
+            depth += 1
+        elif text[i] == '}':
+            depth -= 1
+            if depth == 0:
+                candidate = text[start:i+1]
+                try:
+                    return json.loads(candidate)
+                except Exception:
+                    # minor cleanup: replace fancy quotes, remove trailing commas
+                    cleaned = candidate.replace('“', '"').replace(
+                        '”', '"').replace("’,", '",')
+                    cleaned = re.sub(r',\s*([}\]])', r'\1', cleaned)
+                    try:
+                        return json.loads(cleaned)
+                    except Exception:
+                        return None
+    return None
+
+
+def call_claude_api(prompt: str, model: str, api_key: Optional[str] = None) -> Any:
+    """
+    Call Anthropic/Claude API and attempt to return a parsed JSON object when
+    the assistant's reply contains JSON. On parse failure, returns a dict with
+    'parsed': None plus raw text(s) and raw_api_response for debugging.
+    """
+    if requests is None:
+        raise RuntimeError("Install 'requests' first (pip install requests)")
+
+    key = api_key or resolve_key('anthropic_key', ['ANTHROPIC_API_KEY'])
+    if not key:
+        raise ValueError(
+            "Anthropic API key missing — set in ~/.vmf_config.json or ANTHROPIC_API_KEY env var")
+
+    url = "https://api.anthropic.com/v1/messages"
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": key,
+        # sample version header shown in your snippet
+        "anthropic-version": "2023-06-01",
+    }
+
+    payload = {
+        "model": model,
+        "max_tokens": 4000,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+
+    r = requests.post(url, headers=headers, json=payload, timeout=120)
+    try:
+        r.raise_for_status()
+    except Exception as e:
+        raise RuntimeError(
+            f"Anthropic API request failed: {r.status_code} {r.reason} - {r.text}") from e
+
+    try:
+        resp = r.json()
+    except ValueError:
+        return {"error": "invalid-json-response", "status_code": r.status_code, "text": r.text}
+
+    # Collect candidate assistant text outputs from several possible response shapes
+    assistant_texts: List[str] = []
+
+    # Common case: top-level 'completion' or 'completion' style
+    if isinstance(resp, dict):
+        if 'completion' in resp and isinstance(resp['completion'], str):
+            assistant_texts.append(resp['completion'])
+
+        # Newer shapes: 'output' dict with 'text' or 'completion'
+        out = resp.get('output')
+        if isinstance(out, dict):
+            for key in ('text', 'completion'):
+                v = out.get(key)
+                if isinstance(v, str):
+                    assistant_texts.append(v)
+
+        # 'content' array or field
+        content = resp.get('content')
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict):
+                    t = item.get('text') or item.get('content')
+                    if isinstance(t, str):
+                        assistant_texts.append(t)
+                elif isinstance(item, str):
+                    assistant_texts.append(item)
+        elif isinstance(content, str):
+            assistant_texts.append(content)
+
+        # 'choices' style (some APIs return choices)
+        choices = resp.get('choices')
+        if isinstance(choices, list):
+            for c in choices:
+                if isinstance(c, dict):
+                    # try message.content or text
+                    msg = c.get('message')
+                    if isinstance(msg, dict):
+                        t = msg.get('content') or msg.get('text')
+                        if isinstance(t, str):
+                            assistant_texts.append(t)
+                    t = c.get('text') or c.get('content')
+                    if isinstance(t, str):
+                        assistant_texts.append(t)
+
+    # Fallback: try to find any top-level string values
+    if not assistant_texts:
+        # flatten some likely fields
+        for k, v in resp.items() if isinstance(resp, dict) else []:
+            if isinstance(v, str):
+                assistant_texts.append(v)
+
+    # Try parsing each assistant text until success
+    for t in assistant_texts:
+        parsed = try_parse_json(t)
+        if parsed is not None:
+            return parsed
+
+    # Nothing parsed — return debug object
+    return {"parsed": None, "raw_assistant_texts": assistant_texts, "raw_api_response": resp}
+
+
 def grep_context(lines: List[str], i: int, ctx: int) -> List[str]:
     start = max(0, i - ctx)
     end = min(len(lines), i + ctx + 1)
     return lines[start:end]
+
 
 def prepare_strings_chunks(folder: str):
     p = os.path.join(folder, "strings.txt")
@@ -238,10 +399,12 @@ def prepare_strings_chunks(folder: str):
         if len(t) > CHUNK_CHAR_LIMIT:
             n = math.ceil(len(t)/CHUNK_CHAR_LIMIT)
             for i in range(n):
-                out.append((f"{k}_part{i}", t[i*CHUNK_CHAR_LIMIT:(i+1)*CHUNK_CHAR_LIMIT]))
+                out.append(
+                    (f"{k}_part{i}", t[i*CHUNK_CHAR_LIMIT:(i+1)*CHUNK_CHAR_LIMIT]))
         else:
             out.append((k, t))
     return out
+
 
 def prepare_prompts(folder: str):
     prompts: List[tuple] = []
@@ -259,7 +422,6 @@ def prepare_prompts(folder: str):
             prompts.append((opt + "::tail", txt[-CHUNK_CHAR_LIMIT:]))
         else:
             prompts.append((opt, txt))
-
 
     # First collect all non-strings files
     for fname in TARGET_FILES:
@@ -289,6 +451,7 @@ def prepare_prompts(folder: str):
         prompts.append((f"strings::{k}", t))
 
     return prompts
+
 
 def build_prompt(name: str, body: str, truncate: bool = True) -> str:
     header = (
@@ -332,6 +495,7 @@ def build_prompt(name: str, body: str, truncate: bool = True) -> str:
 
 # ---------------- API CALLS ----------------
 
+
 def call_gpt_api(prompt: str, model: str, api_key: Optional[str]) -> Any:
     """
     Call OpenAI Responses API and attempt to return a parsed JSON object
@@ -341,7 +505,8 @@ def call_gpt_api(prompt: str, model: str, api_key: Optional[str]) -> Any:
     # resolve_key should be available in your environment (keeps your original behavior)
     key = api_key or resolve_key('openai_key', ['OPENAI_API_KEY'])
     if not key:
-        raise ValueError("OpenAI API key missing — set in ~/.vmf_config.json or OPENAI_API_KEY env var")
+        raise ValueError(
+            "OpenAI API key missing — set in ~/.vmf_config.json or OPENAI_API_KEY env var")
 
     url = "https://api.openai.com/v1/responses"
     headers = {
@@ -359,7 +524,8 @@ def call_gpt_api(prompt: str, model: str, api_key: Optional[str]) -> Any:
     try:
         r.raise_for_status()
     except Exception as e:
-        raise RuntimeError(f"OpenAI API request failed: {r.status_code} {r.reason} - {r.text}") from e
+        raise RuntimeError(
+            f"OpenAI API request failed: {r.status_code} {r.reason} - {r.text}") from e
 
     try:
         resp = r.json()
@@ -367,41 +533,7 @@ def call_gpt_api(prompt: str, model: str, api_key: Optional[str]) -> Any:
         # Not JSON (very unlikely), return status/text
         return {"error": "invalid-json-response", "status_code": r.status_code, "text": r.text}
 
-    # Helper: attempt to parse a text blob as JSON
-    def try_parse_json(text: str):
-        # 1) direct parse
-        try:
-            return json.loads(text)
-        except Exception:
-            pass
-
-        # 2) try to find the first balanced JSON object { ... } and parse it
-        #    This handles cases where the model wrapped JSON in code fences or extra text.
-        #    We'll use a simple brace-balancing scan for the first '{' to matching '}'.
-        start = text.find('{')
-        if start == -1:
-            return None
-
-        depth = 0
-        for i in range(start, len(text)):
-            if text[i] == '{':
-                depth += 1
-            elif text[i] == '}':
-                depth -= 1
-                if depth == 0:
-                    candidate = text[start:i+1]
-                    try:
-                        return json.loads(candidate)
-                    except Exception:
-                        # try minor cleanup: replace fancy quotes, remove trailing commas
-                        cleaned = candidate.replace('“', '"').replace('”', '"').replace("’,", '",')
-                        # remove trailing commas before } or ]
-                        cleaned = re.sub(r',\s*([}\]])', r'\1', cleaned)
-                        try:
-                            return json.loads(cleaned)
-                        except Exception:
-                            return None
-        return None
+    # Use the shared try_parse_json defined below
 
     # find assistant output_text items (there can be multiple)
     assistant_texts = []
@@ -409,7 +541,8 @@ def call_gpt_api(prompt: str, model: str, api_key: Optional[str]) -> Any:
 
     for out_item in outputs:
         # The item might contain "content": [ { "type":"output_text", "text": "..." }, ... ]
-        content = out_item.get("content", []) if isinstance(out_item, dict) else []
+        content = out_item.get("content", []) if isinstance(
+            out_item, dict) else []
         if not isinstance(content, list):
             continue
         for c in content:
@@ -450,11 +583,13 @@ def call_perplexity_api(prompt: str, api_key: Optional[str] = None) -> Dict[str,
     """
     if requests is None:
         raise RuntimeError("Install 'requests' first (pip install requests)")
-    key = api_key or resolve_key('perplexity_key', ['PERPLEXITY_API_KEY', 'PPLX_API_KEY'])
+    key = api_key or resolve_key(
+        'perplexity_key', ['PERPLEXITY_API_KEY', 'PPLX_API_KEY'])
     if not key:
         return {"mock": True, "message": "Perplexity API key missing; set in ~/.vmf_config.json or PERPLEXITY_API_KEY/PPLX_API_KEY env var."}
     url = "https://api.perplexity.ai/chat/completions"
-    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {key}",
+               "Content-Type": "application/json"}
     payload = {
         "model": "sonar-pro",
         "messages": [{"role": "user", "content": prompt}],
@@ -471,7 +606,7 @@ def call_perplexity_api(prompt: str, api_key: Optional[str] = None) -> Dict[str,
     return {"success": False, "error": "No choices returned", "raw": data}
 
 
-def send_final_analysis(out_dir: str, api: str, gpt_model: str, gpt_key: Optional[str], perplexity_key: Optional[str], dry_run: bool, verbose: bool, sleep: float = 1.0):
+def send_final_analysis(out_dir: str, api: str, gpt_model: str, gpt_key: Optional[str], perplexity_key: Optional[str], dry_run: bool, verbose: bool, sleep: float = 1.0, anthropic_model: str = "claude-sonnet-4-20250514", anthropic_key: Optional[str] = None):
     """Read final_analysis.txt from out_dir, send to selected API, save raw JSON and write conclusion.txt, and print the aggregated response.
 
     Uses the same prompt template (build_prompt) so we keep the original instructions.
@@ -509,7 +644,8 @@ def send_final_analysis(out_dir: str, api: str, gpt_model: str, gpt_key: Optiona
 
     if verbose:
         try:
-            print(f"Wrote final prompt -> {prompt_path} (chars: {len(prompt)})")
+            print(
+                f"Wrote final prompt -> {prompt_path} (chars: {len(prompt)})")
         except Exception:
             pass
 
@@ -525,6 +661,15 @@ def send_final_analysis(out_dir: str, api: str, gpt_model: str, gpt_key: Optiona
             try:
                 if "choices" in resp and resp["choices"]:
                     agg_text = resp["choices"][0]["message"].get("content", "")
+            except Exception:
+                agg_text = ""
+        elif api == "anthropic":
+            resp = call_claude_api(
+                prompt, model=anthropic_model, api_key=anthropic_key)
+            agg_text = ""
+            try:
+                if "completion" in resp and isinstance(resp["completion"], str):
+                    agg_text = resp["completion"]
             except Exception:
                 agg_text = ""
         else:
@@ -567,19 +712,28 @@ def send_final_analysis(out_dir: str, api: str, gpt_model: str, gpt_key: Optiona
 
 # ---------------- MAIN ----------------
 
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Send selected forensic outputs to LLM (ASCII only, noise-filtered).")
-    parser.add_argument("--folder", "-f", required=True, help="Folder containing forensic files")
+    parser = argparse.ArgumentParser(
+        description="Send selected forensic outputs to LLM (ASCII only, noise-filtered).")
+    parser.add_argument("--folder", "-f", required=True,
+                        help="Folder containing forensic files")
     parser.add_argument("--api", choices=["gpt", "perplexity"], default=None)
     parser.add_argument("--gpt-model", default="gpt-5-mini-2025-08-07")
     parser.add_argument("--gpt-key", default=None)
     parser.add_argument("--perplexity-key", default=None)
-    parser.add_argument("--limit", type=int, default=None, help="Maximum number of shards/chunks to process (e.g. --limit 40)")
+    parser.add_argument("--anthropic-model",
+                        default="claude-sonnet-4-20250514")
+    parser.add_argument("--anthropic-key", default=None)
+    parser.add_argument("--limit", type=int, default=None,
+                        help="Maximum number of shards/chunks to process (e.g. --limit 40)")
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--verbose", "-v", action="store_true")
-    parser.add_argument("--final", action="store_true", help="Send final_analysis.txt to the LLM and save a conclusion.txt")
-    parser.add_argument("--final-only", action="store_true", help="Skip chunking and send an existing final_analysis.txt from out-dir to the LLM")
+    parser.add_argument("--final", action="store_true",
+                        help="Send final_analysis.txt to the LLM and save a conclusion.txt")
+    parser.add_argument("--final-only", action="store_true",
+                        help="Skip chunking and send an existing final_analysis.txt from out-dir to the LLM")
     parser.add_argument("--sleep", type=float, default=1.0)
     args = parser.parse_args(argv)
 
@@ -595,21 +749,39 @@ def main(argv=None):
 
     # Determine which API to use automatically
     if not args.api:
-        # Auto-select based on key presence
-        gpt_key = args.gpt_key or resolve_key('openai_key', ['OPENAI_API_KEY'])
-        pplx_key = args.perplexity_key or resolve_key('perplexity_key', ['PERPLEXITY_API_KEY', 'PPLX_API_KEY'])
-
-        if gpt_key:
+        # Prefer explicit CLI keys first (user intent wins). If none provided,
+        # fall back to config/env keys via resolve_key.
+        if args.gpt_key:
             args.api = "gpt"
-            args.gpt_key = gpt_key
-            print("[INFO] GPT key detected — using OpenAI GPT endpoint.")
-        elif pplx_key:
+            # leave args.gpt_key as provided by CLI
+            print("[INFO] GPT key detected (CLI) — using OpenAI GPT endpoint.")
+        elif args.anthropic_key:
+            args.api = "anthropic"
+            print("[INFO] Anthropic key detected (CLI) — using Anthropic/Claude endpoint.")
+        elif args.perplexity_key:
             args.api = "perplexity"
-            args.perplexity_key = pplx_key
-            print("[INFO] Perplexity key detected — using Perplexity endpoint.")
+            print("[INFO] Perplexity key detected (CLI) — using Perplexity endpoint.")
         else:
-            print("[ERROR] No API key found for GPT or Perplexity. Please provide one.")
-            sys.exit(1)
+            # No explicit CLI keys: check config/env
+            gpt_key = resolve_key('openai_key', ['OPENAI_API_KEY'])
+            anthropic_key = resolve_key('anthropic_key', ['ANTHROPIC_API_KEY'])
+            pplx_key = resolve_key('perplexity_key', ['PERPLEXITY_API_KEY', 'PPLX_API_KEY'])
+
+            if gpt_key:
+                args.api = "gpt"
+                args.gpt_key = gpt_key
+                print("[INFO] GPT key detected — using OpenAI GPT endpoint.")
+            elif anthropic_key:
+                args.api = "anthropic"
+                args.anthropic_key = anthropic_key
+                print("[INFO] Anthropic key detected — using Anthropic/Claude endpoint.")
+            elif pplx_key:
+                args.api = "perplexity"
+                args.perplexity_key = pplx_key
+                print("[INFO] Perplexity key detected — using Perplexity endpoint.")
+            else:
+                print("[ERROR] No API key found for GPT, Anthropic, or Perplexity. Please provide one.")
+                sys.exit(1)
 
     # If the user wants to only run the final step, do it now using the existing final_analysis.txt
     if args.final_only:
@@ -621,6 +793,8 @@ def main(argv=None):
             gpt_model=args.gpt_model,
             gpt_key=args.gpt_key,
             perplexity_key=args.perplexity_key,
+            anthropic_key=args.anthropic_key,
+            anthropic_model=args.anthropic_model,
             dry_run=args.dry_run,
             verbose=args.verbose,
             sleep=args.sleep,
@@ -650,18 +824,21 @@ def main(argv=None):
             f.write(prompt)
 
         if args.dry_run:
-            if args.verbose: print(f"[DRY] {prompt_path}")
+            if args.verbose:
+                print(f"[DRY] {prompt_path}")
             continue
 
         # Call the selected API
         try:
             if args.api == "gpt":
-                resp = call_gpt_api(prompt, model=args.gpt_model, api_key=args.gpt_key)
+                resp = call_gpt_api(
+                    prompt, model=args.gpt_model, api_key=args.gpt_key)
                 # Try to extract assistant text for aggregator
                 agg_text = ""
                 try:
                     if "choices" in resp and resp["choices"]:
-                        agg_text = resp["choices"][0]["message"].get("content", "")
+                        agg_text = resp["choices"][0]["message"].get(
+                            "content", "")
                 except Exception:
                     agg_text = ""
             else:
@@ -706,10 +883,14 @@ def main(argv=None):
             gpt_model=args.gpt_model,
             gpt_key=args.gpt_key,
             perplexity_key=args.perplexity_key,
+            anthropic_key=args.anthropic_key,
+            anthropic_model=args.anthropic_model,
             dry_run=args.dry_run,
             verbose=args.verbose,
             sleep=args.sleep,
         )
+
+
 
 if __name__ == "__main__":
     main()

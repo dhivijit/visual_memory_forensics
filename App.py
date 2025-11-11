@@ -90,6 +90,7 @@ try:
     persisted_model = get_nonsecret('llm_model') or os.environ.get('LLM_MODEL', 'Perplexity')
     persisted_pplx = get_secret('perplexity_key') or os.environ.get("PPLX_API_KEY") or os.environ.get("PERPLEXITY_API_KEY")
     persisted_openai = get_secret('openai_key') or os.environ.get('OPENAI_API_KEY')
+    persisted_anthropic = get_secret('anthropic_key') or os.environ.get('ANTHROPIC_API_KEY')
     persisted_base_out = get_nonsecret('base_out')
     persisted_stage_out = get_nonsecret('stage_out')
     persisted_final_out = get_nonsecret('final_out')
@@ -106,6 +107,7 @@ except Exception:
         secrets = cfg.get('_secrets', {})
         persisted_pplx = secrets.get('perplexity_key') or os.environ.get("PPLX_API_KEY") or os.environ.get("PERPLEXITY_API_KEY")
         persisted_openai = secrets.get('openai_key') or os.environ.get('OPENAI_API_KEY')
+        persisted_anthropic = secrets.get('anthropic_key') or os.environ.get('ANTHROPIC_API_KEY')
         persisted_base_out = cfg.get('base_out')
         persisted_stage_out = cfg.get('stage_out')
         persisted_final_out = cfg.get('final_out')
@@ -113,6 +115,7 @@ except Exception:
         persisted_model = os.environ.get('LLM_MODEL', 'Perplexity')
         persisted_pplx = os.environ.get("PPLX_API_KEY") or os.environ.get("PERPLEXITY_API_KEY")
         persisted_openai = os.environ.get('OPENAI_API_KEY')
+        persisted_anthropic = os.environ.get('ANTHROPIC_API_KEY')
         persisted_base_out = None
         persisted_stage_out = None
         persisted_final_out = None
@@ -177,6 +180,8 @@ if 'perplexity_key' not in st.session_state:
     st.session_state['perplexity_key'] = persisted_pplx or ""
 if 'openai_key' not in st.session_state:
     st.session_state['openai_key'] = persisted_openai or ""
+if 'anthropic_key' not in st.session_state:
+    st.session_state['anthropic_key'] = persisted_anthropic or ""
 if 'base_out_input' not in st.session_state:
     st.session_state['base_out_input'] = str(default_base)
 if 'stage_out_input' not in st.session_state:
@@ -360,6 +365,12 @@ with T4:
                 st.error("OpenAI key is required for the selected model.")
                 st.stop()
             key_flag = ["--gpt-key", key]
+        elif provider == 'Claude':
+            key = st.session_state.get('anthropic_key', '')
+            if not key:
+                st.error("Anthropic/Claude key is required for the selected model.")
+                st.stop()
+            key_flag = ["--anthropic-key", key]
         else:
             key_flag = []
 
@@ -441,6 +452,12 @@ with T5:
                 st.error("OpenAI key is required for the selected model.")
                 st.stop()
             key_flag = ["--gpt-key", key]
+        elif provider == 'Claude':
+            key = st.session_state.get('anthropic_key', '')
+            if not key:
+                st.error("Anthropic/Claude key is required for the selected model.")
+                st.stop()
+            key_flag = ["--anthropic-key", key]
         else:
             key_flag = []
 
