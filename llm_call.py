@@ -306,6 +306,123 @@ def call_claude_api(prompt: str, model: str, api_key: Optional[str] = None) -> A
     return {"parsed": None, "raw_assistant_texts": assistant_texts, "raw_api_response": resp}
 
 
+def call_gemini_api(prompt: str, model: str, api_key: Optional[str] = None) -> Any:
+    """
+    Call Google Gemini (Generative Language) REST endpoint and attempt to
+    return a parsed JSON object when the assistant reply contains JSON.
+    On parse failure, returns a dict with 'parsed': None plus raw texts and
+    raw_api_response for debugging (mirrors the behavior of call_claude_api).
+    """
+    if requests is None:
+        raise RuntimeError("Install 'requests' first (pip install requests)")
+
+    key = api_key
+    if not key:
+        raise ValueError(
+            "Gemini API key missing — must be provided via the --gemini-key CLI argument")
+
+    # Construct URL from model name (example: gemini-2.5-flash)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": key,
+    }
+
+    payload = {
+        "contents": [
+            {"parts": [{"text": prompt}]}
+        ],
+        "generationConfig": {
+            "temperature": 0.0,
+            "maxOutputTokens": 100000
+        }
+    }
+
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=120)
+        r.raise_for_status()
+    except Exception as e:
+        # Surface status and body when available
+        status = None
+        reason = None
+        text = None
+        try:
+            status = r.status_code
+            reason = r.reason
+            text = r.text
+        except Exception:
+            pass
+        msg = f"Gemini API request failed: {status} {reason} - {text}"
+        raise RuntimeError(msg) from e
+
+    try:
+        resp = r.json()
+    except ValueError:
+        return {"error": "invalid-json-response", "status_code": r.status_code, "text": r.text}
+
+    # Collect candidate assistant text outputs from several possible response shapes
+    assistant_texts: List[str] = []
+
+    # Common case: 'candidates' list with content.parts[].text
+    candidates = resp.get("candidates") if isinstance(resp, dict) else None
+    if isinstance(candidates, list):
+        for c in candidates:
+            if isinstance(c, dict):
+                # Try the content -> parts -> text path
+                cont = c.get("content") or c.get("output") or {}
+                if isinstance(cont, dict):
+                    parts = cont.get("parts") or []
+                    if isinstance(parts, list) and parts:
+                        first = parts[0]
+                        if isinstance(first, dict):
+                            t = first.get("text")
+                            if isinstance(t, str) and t:
+                                assistant_texts.append(t)
+                # fallback: candidate might directly carry a 'text' field
+                t = c.get("text") or c.get("content")
+                if isinstance(t, str) and t:
+                    assistant_texts.append(t)
+
+    # Fallbacks: some responses embed text in other keys
+    if not assistant_texts and isinstance(resp, dict):
+        # Look for 'output' -> list of items -> content.parts.text
+        outputs = resp.get("output") or []
+        if isinstance(outputs, list):
+            for out_item in outputs:
+                if isinstance(out_item, dict):
+                    content = out_item.get("content") or []
+                    if isinstance(content, list):
+                        for c in content:
+                            if isinstance(c, dict):
+                                if c.get("type") == "output_text":
+                                    t = c.get("text")
+                                    if isinstance(t, str) and t:
+                                        assistant_texts.append(t)
+                                # generic content.parts
+                                parts = c.get("parts") or []
+                                if isinstance(parts, list) and parts:
+                                    p0 = parts[0]
+                                    if isinstance(p0, dict):
+                                        t = p0.get("text")
+                                        if isinstance(t, str) and t:
+                                            assistant_texts.append(t)
+
+    # Final fallback: gather any top-level string values
+    if not assistant_texts and isinstance(resp, dict):
+        for k, v in resp.items():
+            if isinstance(v, str):
+                assistant_texts.append(v)
+
+    # Try parsing each assistant text until success
+    for t in assistant_texts:
+        parsed = try_parse_json(t)
+        if parsed is not None:
+            return parsed
+
+    # Nothing parsed — return debug object
+    return {"parsed": None, "raw_assistant_texts": assistant_texts, "raw_api_response": resp}
+
+
 def grep_context(lines: List[str], i: int, ctx: int) -> List[str]:
     start = max(0, i - ctx)
     end = min(len(lines), i + ctx + 1)
@@ -584,7 +701,7 @@ def call_perplexity_api(prompt: str, api_key: Optional[str] = None) -> Dict[str,
     return {"success": False, "error": "No choices returned", "raw": data}
 
 
-def send_final_analysis(out_dir: str, api: str, gpt_model: str, gpt_key: Optional[str], perplexity_key: Optional[str], dry_run: bool, verbose: bool, sleep: float = 1.0, anthropic_model: str = "claude-sonnet-4-20250514", anthropic_key: Optional[str] = None):
+def send_final_analysis(out_dir: str, api: str, gpt_model: str, gpt_key: Optional[str], perplexity_key: Optional[str], dry_run: bool, verbose: bool, sleep: float = 1.0, gemini_model: str = "gemini-2.5-flash", gemini_key: Optional[str] = None, anthropic_model: str = "claude-sonnet-4-20250514", anthropic_key: Optional[str] = None):
     """Read final_analysis.txt from out_dir, send to selected API, save raw JSON and write conclusion.txt, and print the aggregated response.
 
     Uses the same prompt template (build_prompt) so we keep the original instructions.
@@ -650,6 +767,17 @@ def send_final_analysis(out_dir: str, api: str, gpt_model: str, gpt_key: Optiona
                     agg_text = resp["completion"]
             except Exception:
                 agg_text = ""
+        elif api == "gemini":
+            resp = call_gemini_api(prompt, model=gemini_model, api_key=gemini_key)
+            agg_text = ""
+            try:
+                if isinstance(resp, dict):
+                    if resp.get("parsed") is None and resp.get("raw_assistant_texts"):
+                        agg_text = "\n\n".join(resp.get("raw_assistant_texts", []))
+                    elif resp.get("parsed") is not None:
+                        agg_text = json.dumps(resp.get("parsed"), ensure_ascii=False)
+            except Exception:
+                agg_text = ""
         else:
             resp = call_perplexity_api(prompt, api_key=perplexity_key)
             agg_text = resp.get("text") or ""
@@ -696,13 +824,15 @@ def main(argv=None):
         description="Send selected forensic outputs to LLM (ASCII only, noise-filtered).")
     parser.add_argument("--folder", "-f", required=True,
                         help="Folder containing forensic files")
-    parser.add_argument("--api", choices=["gpt", "perplexity", "anthropic"], default=None)
+    parser.add_argument("--api", choices=["gpt", "perplexity", "anthropic", "gemini"], default=None)
     parser.add_argument("--gpt-model", default="gpt-5-mini-2025-08-07")
     parser.add_argument("--gpt-key", default=None)
     parser.add_argument("--perplexity-key", default=None)
     parser.add_argument("--anthropic-model",
                         default="claude-sonnet-4-20250514")
     parser.add_argument("--anthropic-key", default=None)
+    parser.add_argument("--gemini-model", default="gemini-2.5-flash")
+    parser.add_argument("--gemini-key", default=None)
     parser.add_argument("--limit", type=int, default=None,
                         help="Maximum number of shards/chunks to process (e.g. --limit 40)")
     parser.add_argument("--out-dir", default=None)
@@ -737,9 +867,12 @@ def main(argv=None):
         elif args.perplexity_key and args.perplexity_key.strip():
             args.api = "perplexity"
             print("[INFO] Perplexity key detected (CLI) — using Perplexity endpoint.")
+        elif args.gemini_key and args.gemini_key.strip():
+            args.api = "gemini"
+            print("[INFO] Gemini key detected (CLI) — using Google Gemini endpoint.")
         else:
             # Strict policy: do not read from config_store or environment — require CLI-provided keys
-            print("[ERROR] No API key provided via CLI. Please pass --gpt-key, --anthropic-key, or --perplexity-key.")
+            print("[ERROR] No API key provided via CLI. Please pass --gpt-key, --anthropic-key, --perplexity-key, or --gemini-key.")
             sys.exit(1)
 
     # ---------------- FINAL-ONLY MODE ----------------
@@ -754,6 +887,8 @@ def main(argv=None):
             perplexity_key=args.perplexity_key,
             anthropic_key=args.anthropic_key,
             anthropic_model=args.anthropic_model,
+            gemini_model=args.gemini_model,
+            gemini_key=args.gemini_key,
             dry_run=args.dry_run,
             verbose=args.verbose,
             sleep=args.sleep,
@@ -806,6 +941,17 @@ def main(argv=None):
                         agg_text = resp["completion"]
                 except Exception:
                     agg_text = ""
+            elif args.api == "gemini":
+                resp = call_gemini_api(prompt, model=args.gemini_model, api_key=args.gemini_key)
+                agg_text = ""
+                try:
+                    if isinstance(resp, dict):
+                        if resp.get("parsed") is None and resp.get("raw_assistant_texts"):
+                            agg_text = "\n\n".join(resp.get("raw_assistant_texts", []))
+                        elif resp.get("parsed") is not None:
+                            agg_text = json.dumps(resp.get("parsed"), ensure_ascii=False)
+                except Exception:
+                    agg_text = ""
             else:
                 resp = call_perplexity_api(prompt, api_key=args.perplexity_key)
                 agg_text = resp.get("text") or ""
@@ -847,6 +993,8 @@ def main(argv=None):
             perplexity_key=args.perplexity_key,
             anthropic_key=args.anthropic_key,
             anthropic_model=args.anthropic_model,
+            gemini_model=args.gemini_model,
+            gemini_key=args.gemini_key,
             dry_run=args.dry_run,
             verbose=args.verbose,
             sleep=args.sleep,

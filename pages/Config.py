@@ -15,6 +15,7 @@ persisted_model = config_store.get_nonsecret('llm_model', os.environ.get('LLM_MO
 persisted_perplexity = config_store.get_secret('perplexity_key') or os.environ.get("PPLX_API_KEY") or os.environ.get("PERPLEXITY_API_KEY")
 persisted_openai = config_store.get_secret('openai_key') or os.environ.get('OPENAI_API_KEY')
 persisted_anthropic = config_store.get_secret('anthropic_key') or os.environ.get('ANTHROPIC_API_KEY')
+persisted_gemini = config_store.get_secret('gemini_key') or os.environ.get('GEMINI_API_KEY')
 
 if 'llm_model' not in st.session_state:
     st.session_state['llm_model'] = persisted_model
@@ -24,6 +25,8 @@ if 'openai_key' not in st.session_state:
     st.session_state['openai_key'] = persisted_openai or ""
 if 'anthropic_key' not in st.session_state:
     st.session_state['anthropic_key'] = persisted_anthropic or ""
+if 'gemini_key' not in st.session_state:
+    st.session_state['gemini_key'] = persisted_gemini or ""
 
 # Provide a reload button so users can refresh the UI from persisted store (file)
 if st.button("Reload saved config"):
@@ -39,7 +42,7 @@ if st.button("Reload saved config"):
 
 col1, col2 = st.columns([2, 3])
 with col1:
-    model = st.selectbox("Default LLM Provider", options=["Perplexity", "OpenAI", "Claude"], index=["Perplexity", "OpenAI", "Claude"].index(st.session_state.get('llm_model', 'Perplexity')))
+    model = st.selectbox("Default LLM Provider", options=["Perplexity", "OpenAI", "Claude", "Gemini"], index=["Perplexity", "OpenAI", "Claude", "Gemini"].index(st.session_state.get('llm_model', 'Perplexity')))
     st.session_state['llm_model'] = model
 
 with col2:
@@ -50,6 +53,8 @@ with col2:
         st.session_state['openai_key'] = st.text_input("OpenAI API Key (sk-...)", value=st.session_state.get('openai_key', ''), type="password")
     elif model == 'Claude':
         st.session_state['anthropic_key'] = st.text_input("Anthropic / Claude API Key", value=st.session_state.get('anthropic_key', ''), type="password")
+    elif model == 'Gemini':
+        st.session_state['gemini_key'] = st.text_input("Gemini API Key", value=st.session_state.get('gemini_key', ''), type="password")
 
 save_to_disk = st.checkbox("Also save secrets to disk (insecure)", value=True)
 
@@ -71,10 +76,17 @@ if st.button("Save config"):
     else:
         config_store.delete_secret('anthropic_key')
 
+    # Gemini key
+    if st.session_state.get('gemini_key'):
+        config_store.set_secret('gemini_key', st.session_state.get('gemini_key'))
+    else:
+        config_store.delete_secret('gemini_key')
+
     st.success("Configuration saved to keyring/file.")
     st.write({
         'llm_model': st.session_state.get('llm_model'),
         'perplexity_key_set': bool(config_store.get_secret('perplexity_key')),
         'openai_key_set': bool(config_store.get_secret('openai_key')),
         'anthropic_key_set': bool(config_store.get_secret('anthropic_key')),
+        'gemini_key_set': bool(config_store.get_secret('gemini_key')),
     })

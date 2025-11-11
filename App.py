@@ -91,6 +91,7 @@ try:
     persisted_pplx = get_secret('perplexity_key') or os.environ.get("PPLX_API_KEY") or os.environ.get("PERPLEXITY_API_KEY")
     persisted_openai = get_secret('openai_key') or os.environ.get('OPENAI_API_KEY')
     persisted_anthropic = get_secret('anthropic_key') or os.environ.get('ANTHROPIC_API_KEY')
+    persisted_gemini = get_secret('gemini_key') or os.environ.get('GEMINI_API_KEY')
     persisted_base_out = get_nonsecret('base_out')
     persisted_stage_out = get_nonsecret('stage_out')
     persisted_final_out = get_nonsecret('final_out')
@@ -108,6 +109,7 @@ except Exception:
         persisted_pplx = secrets.get('perplexity_key') or os.environ.get("PPLX_API_KEY") or os.environ.get("PERPLEXITY_API_KEY")
         persisted_openai = secrets.get('openai_key') or os.environ.get('OPENAI_API_KEY')
         persisted_anthropic = secrets.get('anthropic_key') or os.environ.get('ANTHROPIC_API_KEY')
+        persisted_gemini = secrets.get('gemini_key') or os.environ.get('GEMINI_API_KEY')
         persisted_base_out = cfg.get('base_out')
         persisted_stage_out = cfg.get('stage_out')
         persisted_final_out = cfg.get('final_out')
@@ -119,6 +121,7 @@ except Exception:
         persisted_base_out = None
         persisted_stage_out = None
         persisted_final_out = None
+        persisted_gemini = os.environ.get('GEMINI_API_KEY')
 
 # Helper to persist non-secret values (use config_store when available, otherwise write JSON directly)
 def _persist_nonsecret(key: str, value: str):
@@ -182,6 +185,8 @@ if 'openai_key' not in st.session_state:
     st.session_state['openai_key'] = persisted_openai or ""
 if 'anthropic_key' not in st.session_state:
     st.session_state['anthropic_key'] = persisted_anthropic or ""
+if 'gemini_key' not in st.session_state:
+    st.session_state['gemini_key'] = persisted_gemini or ""
 if 'base_out_input' not in st.session_state:
     st.session_state['base_out_input'] = str(default_base)
 if 'stage_out_input' not in st.session_state:
@@ -371,6 +376,12 @@ with T4:
                 st.error("Anthropic/Claude key is required for the selected model.")
                 st.stop()
             key_flag = ["--anthropic-key", key]
+        elif provider == 'Gemini':
+            key = st.session_state.get('gemini_key', '')
+            if not key:
+                st.error("Gemini key is required for the selected model.")
+                st.stop()
+            key_flag = ["--gemini-key", key]
         else:
             key_flag = []
 
@@ -458,6 +469,12 @@ with T5:
                 st.error("Anthropic/Claude key is required for the selected model.")
                 st.stop()
             key_flag = ["--anthropic-key", key]
+        elif provider == 'Gemini':
+            key = st.session_state.get('gemini_key', '')
+            if not key:
+                st.error("Gemini key is required for the selected model.")
+                st.stop()
+            key_flag = ["--gemini-key", key]
         else:
             key_flag = []
 
